@@ -1,0 +1,54 @@
+# NBA Prototype — Git Ignore
+
+# --- Documentation / planning / article notebooks (workspace-only) ---
+# These stay out of the public repo. Operational + training notebooks live in
+# src/notebooks/ and ARE tracked.
+docs/
+
+# --- Databricks bundle state ---
+.databricks/
+bundle.lock.json
+
+# --- Environment-specific bundle config (copy from databricks.yml.template) ---
+# The real databricks.yml holds workspace hosts + catalog/project names and is
+# NOT committed. Only databricks.yml.template is tracked.
+/databricks.yml
+
+# --- Local config / secrets ---
+.env
+*.env
+!.env.example
+.databrickscfg
+
+# --- Python / IDE artifacts ---
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# --- OS artifacts ---
+.DS_Store
+Thumbs.db
+
+# --- Agent / assistant local state (not part of the project) ---
+.claude/
+.isaac/
+
+# --- Local scratch / drafts (not for the public repo) ---
+slack_cdf_message.txt
+*.scratch
+scratch/
+
+# --- Legacy trigger-based notebooks (parallel-run artifacts) ---
+# Kept locally for reference/cleanup during the CDF cutover, but NOT published:
+# the CDF design supersedes them. Remove these files entirely after cutover.
+src/notebooks/*_backup.py
+
+# --- Editor ---
+.vscode/

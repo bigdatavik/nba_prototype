@@ -1,0 +1,8 @@
+# Treat Databricks notebook sources as Python for language stats and diffs.
+src/notebooks/*.py linguist-language=Python
+
+# Normalize line endings.
+* text=auto eol=lf
+
+# Images are binary.
+*.png binary

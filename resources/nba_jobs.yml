@@ -1,0 +1,133 @@
+# =============================================================================
+# Jobs — NBA data + model pipeline (serverless notebook tasks)
+# =============================================================================
+# All notebook config is passed via base_parameters, which land as notebook
+# widgets. No values are hardcoded in the notebooks.
+#
+#   nba_seed_data        Create UC source tables with synthetic data (run first).
+#   nba_bootstrap        First-time setup: full reset + action-catalog refresh.
+#   nba_daily_sync       Scheduled daily member_features refresh (safe: no reset).
+#   nba_reconcile        On-demand: push app edits UC -> production -> re-fork.
+#   nba_train_model      Train + deploy the scoring endpoint.
+# =============================================================================
+
+resources:
+  jobs:
+
+    nba_seed_data:
+      name: "[${bundle.target}] NBA — Seed UC source tables (synthetic)"
+      tasks:
+        - task_key: seed
+          notebook_task:
+            notebook_path: ../src/notebooks/seed_uc_source_tables.py
+            base_parameters:
+              uc_catalog: ${var.uc_catalog}
+              uc_schema: ${var.uc_schema}
+              num_members: "50"
+
+    nba_bootstrap:
+      name: "[${bundle.target}] NBA — Bootstrap Lakebase (reset + seed)"
+      tasks:
+        - task_key: sync_reset
+          notebook_task:
+            notebook_path: ../src/notebooks/sync_nba_to_lakebase.py
+            base_parameters:
+              uc_catalog: ${var.uc_catalog}
+              uc_schema: ${var.uc_schema}
+              lakebase_database: ${var.lakebase_database}
+              lakebase_database_id: ${var.lakebase_database_id}
+              lakebase_schema: ${var.lakebase_schema}
+              lakebase_project: ${var.lakebase_project}
+              lakebase_branch: ${var.lakebase_branch}
+              app_writes_branch: ${var.app_writes_branch}
+              cdf_catalog: ${var.cdf_catalog}
+              cdf_schema: ${var.cdf_schema}
+              nba_console_sp: ${var.nba_console_sp}
+              nba_console_app_name: ${var.app_name}
+              reset_environment: "true"
+              refresh_action_catalog: "true"
+
+    nba_daily_sync:
+      name: "[${bundle.target}] NBA — Daily member_features sync"
+      tasks:
+        - task_key: sync
+          notebook_task:
+            notebook_path: ../src/notebooks/sync_nba_to_lakebase.py
+            base_parameters:
+              uc_catalog: ${var.uc_catalog}
+              uc_schema: ${var.uc_schema}
+              lakebase_database: ${var.lakebase_database}
+              lakebase_database_id: ${var.lakebase_database_id}
+              lakebase_schema: ${var.lakebase_schema}
+              lakebase_project: ${var.lakebase_project}
+              lakebase_branch: ${var.lakebase_branch}
+              app_writes_branch: ${var.app_writes_branch}
+              cdf_catalog: ${var.cdf_catalog}
+              cdf_schema: ${var.cdf_schema}
+              nba_console_sp: ${var.nba_console_sp}
+              nba_console_app_name: ${var.app_name}
+              reset_environment: "false"
+              refresh_action_catalog: "false"
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: "America/New_York"
+        pause_status: PAUSED
+
+    nba_reset_action_catalog:
+      # Non-destructive: resets action_catalog to the 16 baseline rows (drops
+      # any app-added rows) AND refreshes member_features. Does NOT delete the
+      # app-writes branch or drop tables. Use to return actions to baseline
+      # without a full environment reset.
+      name: "[${bundle.target}] NBA — Reset action_catalog to baseline"
+      tasks:
+        - task_key: reset_catalog
+          notebook_task:
+            notebook_path: ../src/notebooks/sync_nba_to_lakebase.py
+            base_parameters:
+              uc_catalog: ${var.uc_catalog}
+              uc_schema: ${var.uc_schema}
+              lakebase_database: ${var.lakebase_database}
+              lakebase_database_id: ${var.lakebase_database_id}
+              lakebase_schema: ${var.lakebase_schema}
+              lakebase_project: ${var.lakebase_project}
+              lakebase_branch: ${var.lakebase_branch}
+              app_writes_branch: ${var.app_writes_branch}
+              cdf_catalog: ${var.cdf_catalog}
+              cdf_schema: ${var.cdf_schema}
+              nba_console_sp: ${var.nba_console_sp}
+              nba_console_app_name: ${var.app_name}
+              reset_environment: "false"
+              refresh_action_catalog: "true"
+
+    nba_reconcile:
+      name: "[${bundle.target}] NBA — Reconcile action_catalog"
+      tasks:
+        - task_key: reconcile
+          notebook_task:
+            notebook_path: ../src/notebooks/reconcile_action_catalog.py
+            base_parameters:
+              uc_catalog: ${var.uc_catalog}
+              uc_schema: ${var.uc_schema}
+              lakebase_database: ${var.lakebase_database}
+              lakebase_database_id: ${var.lakebase_database_id}
+              lakebase_schema: ${var.lakebase_schema}
+              lakebase_project: ${var.lakebase_project}
+              lakebase_branch: ${var.lakebase_branch}
+              app_writes_branch: ${var.app_writes_branch}
+              cdf_catalog: ${var.cdf_catalog}
+              cdf_schema: ${var.cdf_schema}
+              nba_console_sp: ${var.nba_console_sp}
+              nba_console_app_name: ${var.app_name}
+
+    nba_train_model:
+      name: "[${bundle.target}] NBA — Train + deploy scoring model"
+      tasks:
+        - task_key: train_deploy
+          notebook_task:
+            notebook_path: ../src/notebooks/nba_model_training_and_deploy.py
+            base_parameters:
+              uc_catalog: ${var.uc_catalog}
+              uc_schema: ${var.uc_schema}
+              model_name: ${var.model_name}
+              model_endpoint_name: ${var.model_endpoint_name}
+              mlflow_experiment_path: ${var.mlflow_experiment_path}

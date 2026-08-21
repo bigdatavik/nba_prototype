@@ -1,0 +1,52 @@
+command:
+  - streamlit
+  - run
+  - app.py
+  - --server.port
+  - "8000"
+
+# -----------------------------------------------------------------------------
+# Environment configuration
+# -----------------------------------------------------------------------------
+# These values are environment-specific. When deploying via the Databricks Asset
+# Bundle, they are overwritten per-target from bundle variables (see
+# databricks.yml -> targets -> variables, wired through resources/nba_app.app.yml).
+# The values committed here are safe, generic defaults so the app is runnable and
+# inspectable outside the bundle.
+#
+# Nothing below is tied to a specific workspace or Lakebase endpoint host — the
+# app resolves the actual Postgres host at runtime from LAKEBASE_PROJECT + branch
+# names via the Databricks SDK, so it self-heals across branch re-forks with no
+# redeploy. Set LAKEBASE_HOST_* only if you must pin a static host.
+env:
+  # --- Lakebase project + branches ---
+  - name: LAKEBASE_PROJECT
+    value: "lakebase-demo-autoscale"
+  - name: LAKEBASE_BRANCH_PRODUCTION
+    value: "production"
+  - name: LAKEBASE_BRANCH_APP_WRITES
+    value: "app-writes"
+  # --- Shared Postgres coordinates ---
+  - name: LAKEBASE_DATABASE
+    value: "databricks_postgres"
+  - name: LAKEBASE_SCHEMA
+    value: "nba_new_lbase"
+  # --- Model serving ---
+  - name: MODEL_ENDPOINT_NAME
+    value: "nba-scoring-endpoint"
+
+resources:
+  - name: lakebase-production
+    lakebase:
+      permission: CAN_CONNECT
+      postgres:
+        branch: production
+        database: databricks_postgres
+  - name: lakebase-app-writes
+    lakebase:
+      permission: CAN_CONNECT_AND_CREATE
+      postgres:
+        branch: app-writes
+        database: databricks_postgres
+  - name: nba-model
+    serving_endpoint: nba-scoring-endpoint

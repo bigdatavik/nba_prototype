@@ -1,0 +1,58 @@
+# =============================================================================
+# Databricks App — nba-console (Streamlit)
+# =============================================================================
+# Source lives in ../src/app. The `config` block below is the authoritative,
+# per-target app configuration (env vars + resource bindings) injected from
+# bundle variables, so the same code runs against any Lakebase project /
+# schema / model endpoint without editing app.yaml.
+#
+# After deploy, start the app with:
+#   databricks bundle run nba_console -t dev
+# =============================================================================
+
+resources:
+  apps:
+    nba_console:
+      name: ${var.app_name}
+      description: "Healthcare Payer Next Best Action console (Lakebase + Model Serving)."
+      source_code_path: ../src/app
+
+      config:
+        command:
+          - streamlit
+          - run
+          - app.py
+          - --server.port
+          - "8000"
+        env:
+          - name: LAKEBASE_PROJECT
+            value: ${var.lakebase_project}
+          - name: LAKEBASE_BRANCH_PRODUCTION
+            value: ${var.lakebase_branch}
+          - name: LAKEBASE_BRANCH_APP_WRITES
+            value: ${var.app_writes_branch}
+          - name: LAKEBASE_DATABASE
+            value: ${var.lakebase_database}
+          - name: LAKEBASE_SCHEMA
+            value: ${var.lakebase_schema}
+          - name: MODEL_ENDPOINT_NAME
+            value: ${var.model_endpoint_name}
+
+      resources:
+        - name: lakebase-production
+          description: "Read path — member_features (production branch)."
+          postgres:
+            branch: projects/${var.lakebase_project}/branches/${var.lakebase_branch}
+            database: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/databases/${var.lakebase_database_id}
+            permission: CAN_CONNECT_AND_CREATE
+        - name: lakebase-app-writes
+          description: "CRUD path — action_catalog + audit (app-writes branch)."
+          postgres:
+            branch: projects/${var.lakebase_project}/branches/${var.app_writes_branch}
+            database: projects/${var.lakebase_project}/branches/${var.app_writes_branch}/databases/${var.lakebase_database_id}
+            permission: CAN_CONNECT_AND_CREATE
+        - name: nba-model
+          description: "Scoring endpoint."
+          serving_endpoint:
+            name: ${var.model_endpoint_name}
+            permission: CAN_QUERY

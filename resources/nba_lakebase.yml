@@ -1,0 +1,31 @@
+# =============================================================================
+# Lakebase (Autoscaling Postgres) — infrastructure as code
+# =============================================================================
+# Creates the Lakebase PROJECT as a bundle resource, so a brand-new workspace
+# needs NO manual "create a Lakebase project" step — `databricks bundle deploy`
+# provisions it. Requires Databricks CLI >= 0.287.0 (postgres_* resources; Beta).
+#
+# What this creates on deploy:
+#   • a Lakebase project (id = ${var.lakebase_project})
+#   • its DEFAULT `production` branch + read-write endpoint (auto-provisioned by
+#     Lakebase when the project is created — we do NOT declare it here)
+#
+# What this does NOT create (intentionally):
+#   • the `app-writes` branch — the nba_bootstrap job forks it from production
+#     and re-forks it on reset (it owns the CDF setup + REPLICA IDENTITY logic),
+#     so we leave that branch to the job rather than split ownership.
+#
+# Safety: prevent_destroy stops `bundle destroy` from deleting the project by
+# accident. Remove it deliberately when you actually want to tear the project
+# down (soft-delete, 7-day retention; use `databricks postgres delete-project
+# projects/<id> --purge` to hard-delete immediately).
+# =============================================================================
+
+resources:
+  postgres_projects:
+    nba_lakebase:
+      project_id: ${var.lakebase_project}
+      display_name: "NBA Prototype Lakebase"
+      pg_version: 17
+      lifecycle:
+        prevent_destroy: true

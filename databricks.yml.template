@@ -1,0 +1,132 @@
+# =============================================================================
+# Databricks Asset Bundle — NBA Prototype (Next Best Action) — TEMPLATE
+# =============================================================================
+# Copy this file to `databricks.yml` and fill in your workspace host + variable
+# values, then deploy. The real `databricks.yml` is gitignored so environment-
+# specific names never get committed.
+#
+#   cp databricks.yml.template databricks.yml
+#   # edit targets.<name>.workspace.host and variables
+#
+# One bundle deploys the whole system to any workspace:
+#   • seed + sync + reconcile + model-training jobs (Lakeflow)
+#   • the nba-console Databricks App (Streamlit)
+#
+# Everything environment-specific is a variable below and is passed to the
+# notebooks as job parameters (widgets) and to the app via its resource config.
+# Changing workspace, catalog, Lakebase project, or endpoint names never
+# requires a code edit — only overriding a variable or picking a target.
+# =============================================================================
+
+bundle:
+  name: nba-prototype
+
+include:
+  - resources/*.yml
+
+# -----------------------------------------------------------------------------
+# Variables — override per target (see targets:) or with --var on the CLI.
+# -----------------------------------------------------------------------------
+variables:
+  uc_catalog:
+    description: Unity Catalog catalog holding NBA source tables.
+    default: nba_demo
+  uc_schema:
+    description: UC schema with serving_member_features and action_catalog.
+    default: nba_new
+  lakebase_project:
+    description: >-
+      Lakebase project id. Created by the bundle (resources/nba_lakebase.yml,
+      postgres_projects) on deploy — not a manual prerequisite. Requires CLI
+      >= 0.287.0.
+    default: nba-lakebase
+  lakebase_database:
+    description: Lakebase (Postgres) database name (the SQL dbname, e.g. databricks_postgres).
+    default: databricks_postgres
+  lakebase_database_id:
+    description: >-
+      Lakebase database RESOURCE id used in app resource paths
+      (projects/<proj>/branches/<branch>/databases/<id>). Note this is often the
+      hyphenated form of the database name, e.g. databricks-postgres. Find it with:
+      databricks postgres list-databases projects/<proj>/branches/production
+    default: databricks-postgres
+  lakebase_schema:
+    description: Lakebase (Postgres) schema for NBA tables.
+    default: nba_new_lbase
+  lakebase_branch:
+    description: Lakebase production branch (read path).
+    default: production
+  app_writes_branch:
+    description: Lakebase app-writes branch (CRUD path).
+    default: app-writes
+  cdf_catalog:
+    description: UC catalog holding the Lakebase CDF history + watermark tables.
+    default: nba_demo
+  cdf_schema:
+    description: UC schema (within cdf_catalog) for CDF history + watermark.
+    default: cdf
+  model_name:
+    description: Registered model name (within uc_catalog.uc_schema).
+    default: nba_scoring_model
+  model_endpoint_name:
+    description: Model serving endpoint name.
+    default: nba-scoring-endpoint
+  mlflow_experiment_path:
+    description: >-
+      MLflow experiment path for training runs. Leave blank to use the running
+      user's home folder (/Users/<user>/nba_scoring_experiment).
+    default: ""
+  app_name:
+    description: Databricks App name (also used to auto-resolve its SP).
+    default: nba-console
+  nba_console_sp:
+    description: >-
+      App service principal client id used for Lakebase GRANTs. Leave blank to
+      auto-resolve from the deployed app (recommended).
+    default: ""
+  warehouse_id:
+    description: Optional SQL warehouse id (unused by default jobs).
+    default: ""
+
+# -----------------------------------------------------------------------------
+# Targets — dev (default) and prod. Add your own environment targets as needed.
+# Set the workspace host per target, or rely on the CLI profile (-p / env var).
+# -----------------------------------------------------------------------------
+targets:
+  dev:
+    default: true
+    mode: development
+    workspace:
+      host: https://<your-dev-workspace>.cloud.databricks.com
+    variables:
+      uc_catalog: nba_demo
+      uc_schema: nba_new
+      lakebase_project: nba-lakebase
+      lakebase_schema: nba_new_lbase
+      app_name: nba-console-dev
+
+  # Example: an additional environment target. Copy/rename per workspace.
+  # myenv:
+  #   mode: development
+  #   workspace:
+  #     host: https://<your-workspace>.cloud.databricks.com
+  #   variables:
+  #     uc_catalog: nba_demo
+  #     lakebase_project: <your-lakebase-project-id>
+  #     app_name: nba-console-myenv
+
+  prod:
+    mode: production
+    workspace:
+      host: https://<your-prod-workspace>.cloud.databricks.com
+      # Production must pin a single deployment path. Point this at the service
+      # principal (or user) that owns prod deployments so only one copy exists.
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    # run_as:
+    #   service_principal_name: <prod-deploy-sp>
+    variables:
+      uc_catalog: nba_demo
+      uc_schema: nba_new
+      lakebase_project: nba-lakebase
+      lakebase_schema: nba_new_lbase
+      app_name: nba-console
