@@ -4,6 +4,7 @@
 # These stay out of the public repo. Operational + training notebooks live in
 # src/notebooks/ and ARE tracked.
 docs/
+design/
 
 # --- Databricks bundle state ---
 .databricks/
