@@ -7,7 +7,7 @@
 # workspace once you've set the target's host + variables in databricks.yml.
 #
 # Usage in a script:
-#   TARGET="${1:-dev}"
+#   TARGET="${1:-fevm}"
 #   source "$(dirname "$0")/_lib.sh"
 #   load_bundle_config "$TARGET"
 #   # now $UC_CATALOG, $LAKEBASE_PROJECT, $APP_NAME, ... are set

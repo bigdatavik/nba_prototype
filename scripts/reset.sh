@@ -19,7 +19,7 @@
 # =============================================================================
 source "$(dirname "$0")/_lib.sh"
 
-TARGET="${1:-dev}"
+TARGET="${1:-fevm}"
 MODE="${2:-baseline}"
 require_cli
 load_bundle_config "$TARGET"

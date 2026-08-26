@@ -16,7 +16,7 @@
 # =============================================================================
 source "$(dirname "$0")/_lib.sh"
 
-TARGET="${1:-dev}"
+TARGET="${1:-fevm}"
 require_cli
 load_bundle_config "$TARGET"
 

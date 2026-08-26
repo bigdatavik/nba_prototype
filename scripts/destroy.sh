@@ -27,7 +27,7 @@
 # =============================================================================
 source "$(dirname "$0")/_lib.sh"
 
-TARGET="${1:-dev}"
+TARGET="${1:-fevm}"
 ASSUME_YES="no"
 KEEP_PROJECT="no"
 CATALOG_MODE="schemas"   # schemas (default) | catalog | keep

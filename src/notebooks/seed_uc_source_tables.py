@@ -30,7 +30,13 @@ NUM_MEMBERS = int(dbutils.widgets.get("num_members"))
 MEMBER_FEATURES_TABLE = f"{UC_CATALOG}.{UC_SCHEMA}.serving_member_features"
 ACTION_CATALOG_TABLE = f"{UC_CATALOG}.{UC_SCHEMA}.action_catalog"
 
-spark.sql(f"CREATE CATALOG IF NOT EXISTS {UC_CATALOG}")
+# Only attempt CREATE CATALOG when it truly doesn't exist. In workspaces with
+# Default Storage (no metastore storage root), even `CREATE CATALOG IF NOT
+# EXISTS` on an EXISTING catalog raises INVALID_STATE, so we guard on existence
+# and let reuse of a pre-created catalog (UI-created / Default Storage) work.
+_catalog_exists = spark.sql(f"SHOW CATALOGS LIKE '{UC_CATALOG}'").count() > 0
+if not _catalog_exists:
+    spark.sql(f"CREATE CATALOG IF NOT EXISTS {UC_CATALOG}")
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {UC_CATALOG}.{UC_SCHEMA}")
 print(f"Target: {MEMBER_FEATURES_TABLE}")
 print(f"Target: {ACTION_CATALOG_TABLE}")
