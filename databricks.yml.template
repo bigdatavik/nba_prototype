@@ -85,7 +85,29 @@ variables:
       auto-resolve from the deployed app (recommended).
     default: ""
   warehouse_id:
-    description: Optional SQL warehouse id (unused by default jobs).
+    description: >-
+      SQL warehouse id backing the Genie space (used by the app's "Ask NBA"
+      page, and to grant the app SP warehouse access during setup). Optional.
+    default: ""
+  genie_space_id:
+    description: >-
+      Genie Space id the app's "Ask NBA" page queries via the Conversation API.
+      Blank disables the page. Provision the space separately (see the
+      genie-room tutorial project), then set this + genie_catalog/genie_schema.
+    default: ""
+  genie_catalog:
+    description: >-
+      UC catalog holding the Genie space's analytics tables. setup.sh grants the
+      app SP SELECT here so Genie can run its generated SQL. Blank skips it.
+    default: ""
+  genie_schema:
+    description: UC schema (within genie_catalog) holding the Genie space's tables.
+    default: ""
+  llm_endpoint_name:
+    description: >-
+      Foundation Model chat endpoint (llm/v1/chat) the app's per-member Assist
+      uses to draft outreach. Blank disables drafting. setup.sh grants the app
+      SP CAN_QUERY on it. e.g. databricks-claude-haiku-4-5.
     default: ""
 
 # -----------------------------------------------------------------------------

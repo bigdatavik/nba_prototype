@@ -35,6 +35,16 @@ LAKEBASE_DATABASE = os.getenv("LAKEBASE_DATABASE", "databricks_postgres")
 LAKEBASE_SCHEMA = os.getenv("LAKEBASE_SCHEMA", "nba_new_lbase")
 MODEL_ENDPOINT_NAME = os.getenv("MODEL_ENDPOINT_NAME", "nba-scoring-endpoint")
 
+# Genie Space for the "Ask NBA" page (natural-language analytics over UC). Blank
+# disables the page. The space is bound to its own SQL warehouse at creation, so
+# the app only needs the space id.
+GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "")
+
+# Foundation Model (chat) endpoint used by the per-member "Assist" — drafts the
+# outreach message. Blank disables the draft feature (reason codes + what-if
+# still work). Any Databricks FM chat endpoint (llm/v1/chat) works.
+LLM_ENDPOINT_NAME = os.getenv("LLM_ENDPOINT_NAME", "")
+
 # Lakebase project + branch names → endpoint resource paths.
 # Prefer the explicit endpoint env vars if provided; otherwise build them from
 # project/branch so callers only need to set two simple values.
@@ -413,6 +423,138 @@ def apply_orchestration(member_features: dict, actions: list, scores: list) -> l
 
 
 # =============================================================================
+# Assist — per-member decision support (explain, draft, what-if)
+# =============================================================================
+# Turns Member Lookup from a lookup into a decision: WHY this action, a drafted
+# outreach message, and a what-if re-score. Reason codes are deterministic (no
+# model call); the draft uses a Foundation Model chat endpoint.
+
+def _f(member: dict, key: str, default=0.0) -> float:
+    """Safe float accessor for member features."""
+    val = member.get(key, default)
+    try:
+        return float(val) if val is not None else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def explain_recommendation(member: dict, action: dict) -> list:
+    """Deterministic, human-readable reasons this action was recommended for
+    this member — derived from member features + the action's attributes."""
+    reasons = []
+    cat = (action.get("action_category") or "").upper()
+
+    if _f(member, "has_preventive_gap") >= 1 and cat == "STARS":
+        reasons.append("Open preventive / Stars care gap — this action targets it.")
+    if (_f(member, "is_care_mgmt_candidate") >= 1 or _f(member, "clinical_risk_score") >= 0.7) \
+            and cat in ("PCO", "HOME HEALTH", "MRA"):
+        reasons.append(f"High clinical risk (score {_f(member,'clinical_risk_score'):.2f}) — care-management candidate.")
+    if _f(member, "chronic_claims_12m") >= 5:
+        reasons.append(f"Elevated chronic-condition claims ({int(_f(member,'chronic_claims_12m'))} in 12m).")
+    if (_f(member, "is_churn_risk") >= 1 or _f(member, "churn_risk_score") >= 0.5) and cat == "PCO":
+        reasons.append(f"Elevated churn risk (score {_f(member,'churn_risk_score'):.2f}) — retention-oriented.")
+    if _f(member, "raf_score") >= 1.8 and cat == "MRA":
+        reasons.append(f"RAF recapture opportunity (RAF {_f(member,'raf_score'):.2f}).")
+    if action.get("compliance_flag"):
+        reasons.append("Regulatory / compliance action — prioritized and not suppressible.")
+    if _f(member, "value_score", action.get("value_score", 0)) and int(action.get("value_score", 0)) >= 85:
+        reasons.append(f"High strategic value (value score {int(action.get('value_score',0))}).")
+    if int(action.get("strategic_priority", 5)) == 1:
+        reasons.append("Top strategic priority (P1).")
+
+    digital = _f(member, "digital_interactions")
+    phone = _f(member, "phone_interactions")
+    if digital > phone:
+        reasons.append("Member engages more via digital — matches the recommended channel.")
+    elif phone > digital:
+        reasons.append("Member engages more by phone — matches the recommended channel.")
+    if _f(member, "engagement_score") <= 4:
+        reasons.append(f"Low engagement ({_f(member,'engagement_score'):.1f}/10) — proactive outreach may re-activate.")
+
+    if not reasons:
+        reasons.append(f"Best model fit for this member among available actions "
+                       f"(value score {int(action.get('value_score',0))}).")
+    return reasons[:5]
+
+
+def priority_band(score: float) -> str:
+    """Map an NBA priority score (0-1) to a band label."""
+    if score >= 0.66:
+        return "High priority"
+    if score >= 0.40:
+        return "Medium priority"
+    return "Watch"
+
+
+def project_trajectory(member: dict, action: dict, score: float) -> dict:
+    """Heuristic projection of the member's risk with vs. without this action.
+    Illustrative (not a clinical prediction) — scales the expected lift by the
+    action's value_score and uses the risk signal that fits the action category."""
+    cat = (action.get("action_category") or "").upper()
+    churn = _f(member, "churn_risk_score")
+    clinical = _f(member, "clinical_risk_score")
+    if cat == "PCO":
+        current, label = churn, "churn risk"
+    elif cat in ("MRA", "HOME HEALTH"):
+        current, label = clinical, "clinical risk"
+    else:  # STARS / Pharmacy / other → clinical/care-gap proxy
+        current, label = max(clinical, churn), "risk"
+    value = float(action.get("value_score", 70) or 70)
+    lift = min(0.45, 0.15 + value / 300.0)          # 15%–45% expected reduction
+    without = min(0.99, round(current + 0.05, 2))    # drifts up without action
+    with_new = round(current * (1 - lift), 2)
+    return {"label": label, "current": round(current, 2), "without": without,
+            "with_new": with_new, "lift_pct": round(lift * 100)}
+
+
+PRIORITY_THRESHOLD = 0.66
+
+
+def call_llm(messages: list, max_tokens: int = 300, temperature: float = 0.4) -> Optional[str]:
+    """Call a Databricks Foundation Model chat endpoint. Returns text or None."""
+    if not LLM_ENDPOINT_NAME:
+        return None
+    host = get_databricks_host()
+    from databricks.sdk.core import Config
+    cfg = Config()
+    headers = cfg.authenticate()
+    headers["Content-Type"] = "application/json"
+    try:
+        resp = requests.post(
+            f"https://{host}/serving-endpoints/{LLM_ENDPOINT_NAME}/invocations",
+            headers=headers,
+            json={"messages": messages, "max_tokens": max_tokens, "temperature": temperature},
+            timeout=60,
+        )
+        if resp.status_code != 200:
+            return None
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return None
+
+
+def draft_outreach(member: dict, action: dict, channel: str) -> Optional[str]:
+    """Draft a short, compliant member outreach message for this action/channel."""
+    age = int(_f(member, "age"))
+    context = (
+        f"Member context (no PHI): age band ~{age}, engagement {_f(member,'engagement_score'):.1f}/10, "
+        f"preferred channel {channel}."
+    )
+    system = (
+        "You are a healthcare payer member-engagement assistant. Write a short, warm, "
+        "plain-language outreach message. Be compliant: no PHI, no diagnosis claims, no "
+        "guarantees; include a clear next step. Keep it under 80 words."
+    )
+    user = (
+        f"Action: {action.get('action_name')} — {action.get('description','')}\n"
+        f"Channel: {channel}\n{context}\n\n"
+        f"Write the {channel} outreach message."
+    )
+    return call_llm([{"role": "system", "content": system},
+                     {"role": "user", "content": user}])
+
+
+# =============================================================================
 # CRUD Operations (for Manage Actions page)
 # =============================================================================
 
@@ -462,6 +604,99 @@ def get_change_log() -> pd.DataFrame:
         cur.execute(f"SELECT * FROM {LAKEBASE_SCHEMA}._action_catalog_changes ORDER BY changed_at DESC LIMIT 50")
         rows = cur.fetchall()
     return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
+
+
+# =============================================================================
+# Genie Conversation API (Ask NBA page)
+# =============================================================================
+# The app calls the Genie Conversation API with its own injected credentials
+# (same auth path as score_actions). Genie reads Unity Catalog directly through
+# its bound SQL warehouse, so this never touches the Lakebase read/write path.
+
+def _genie_headers():
+    from databricks.sdk.core import Config
+    cfg = Config()
+    h = cfg.authenticate()
+    h["Content-Type"] = "application/json"
+    return h
+
+
+def genie_ask(question: str, conversation_id: Optional[str] = None) -> dict:
+    """Ask the Genie space a question (start or continue a conversation) and wait
+    for the answer. Returns {conversation_id, answer, sql, dataframe, error}."""
+    host = get_databricks_host()
+    base = f"https://{host}/api/2.0/genie/spaces/{GENIE_SPACE_ID}"
+    headers = _genie_headers()
+    out = {"conversation_id": conversation_id, "answer": "", "sql": "",
+           "dataframe": None, "error": None}
+    try:
+        # Start or continue the conversation
+        if conversation_id:
+            r = requests.post(f"{base}/conversations/{conversation_id}/messages",
+                              headers=headers, json={"content": question}, timeout=30)
+        else:
+            r = requests.post(f"{base}/start-conversation",
+                              headers=headers, json={"content": question}, timeout=30)
+        if r.status_code != 200:
+            out["error"] = f"Genie start error {r.status_code}: {r.text[:300]}"
+            return out
+        data = r.json()
+        cid = data.get("conversation_id") or conversation_id
+        mid = data.get("message_id") or (data.get("message") or {}).get("id")
+        out["conversation_id"] = cid
+
+        # Poll the message until it completes (Genie + warehouse can take a bit)
+        msg = {}
+        for _ in range(40):  # ~200s max
+            m = requests.get(f"{base}/conversations/{cid}/messages/{mid}",
+                             headers=headers, timeout=30)
+            if m.status_code != 200:
+                out["error"] = f"Genie poll error {m.status_code}"
+                return out
+            msg = m.json()
+            status = msg.get("status")
+            if status in ("COMPLETED", "FAILED", "CANCELLED", "QUERY_RESULT_EXPIRED"):
+                break
+            time.sleep(5)
+
+        if msg.get("status") != "COMPLETED":
+            out["error"] = f"Genie did not complete (status={msg.get('status')})."
+            return out
+
+        # Extract text answer + SQL, and fetch the query result if present
+        for att in msg.get("attachments", []):
+            if att.get("text"):
+                out["answer"] = att["text"].get("content", "")
+            if att.get("query"):
+                q = att["query"]
+                out["sql"] = q.get("query", "")
+                att_id = att.get("attachment_id")
+                out["dataframe"] = _genie_query_result(base, cid, mid, att_id, headers)
+        return out
+    except Exception as e:
+        out["error"] = f"Genie request failed: {e}"
+        return out
+
+
+def _genie_query_result(base, cid, mid, att_id, headers) -> Optional[pd.DataFrame]:
+    """Fetch a Genie attachment's SQL result and build a DataFrame."""
+    urls = []
+    if att_id:
+        urls.append(f"{base}/conversations/{cid}/messages/{mid}/attachments/{att_id}/query-result")
+    urls.append(f"{base}/conversations/{cid}/messages/{mid}/query-result")
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=60)
+            if r.status_code != 200:
+                continue
+            sr = r.json().get("statement_response", {})
+            cols = [c["name"] for c in sr.get("manifest", {}).get("schema", {}).get("columns", [])]
+            rows = sr.get("result", {}).get("data_array")
+            if cols and rows is not None:
+                return pd.DataFrame(rows, columns=cols)
+        except Exception:
+            continue
+    return None
 
 
 # =============================================================================
@@ -527,6 +762,90 @@ def page_member_lookup():
         use_container_width=True,
         hide_index=True,
     )
+
+    # --- Assist: turn the recommendation into a decision ---
+    if ranked:
+        st.divider()
+        st.subheader("\U0001f9e0 Assist")
+        top = ranked[0]
+        top_action = next((a for a in actions if a["action_id"] == top["action_id"]), {})
+        tab_why, tab_draft, tab_whatif = st.tabs(
+            ["Why this action", "Draft outreach", "What-if"])
+
+        with tab_why:
+            score = float(top["score"])
+            band = priority_band(score)
+            st.markdown(f"#### Why `{selected_member}` → {top['action_name']} ({band})")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("NBA priority score", f"{score:.2f}")
+            m2.metric("Band", band)
+            m3.metric("Category", top["category"] or "—")
+            m4.metric("Compliance", "Yes" if top["compliance"] else "No")
+
+            if score >= PRIORITY_THRESHOLD:
+                st.markdown(f"Priority score **{score:.2f}** exceeds the "
+                            f"**{PRIORITY_THRESHOLD:.2f}** action threshold — recommend now.")
+            else:
+                st.markdown(f"Priority score **{score:.2f}** is below the "
+                            f"{PRIORITY_THRESHOLD:.2f} high-priority threshold; recommended "
+                            f"as the best available fit for this member.")
+
+            st.markdown("**Reasoning:**")
+            for i, r in enumerate(explain_recommendation(member, top_action), 1):
+                st.markdown(f"{i}. {r}")
+
+            traj = project_trajectory(member, top_action, score)
+            st.markdown("**Predicted trajectory:**")
+            st.markdown(f"- Without intervention: {traj['label']} likely to drift to "
+                        f"~**{traj['without']:.2f}** (now {traj['current']:.2f})")
+            st.markdown(f"- With {top['action_name']}: expected reduction "
+                        f"~**{traj['lift_pct']}%** → **{traj['with_new']:.2f}**")
+            st.caption("Trajectory is a heuristic projection for illustration, "
+                       "not a clinical prediction.")
+
+        with tab_draft:
+            default_ch = top["channel"] if top["channel"] in CHANNELS else CHANNELS[0]
+            channel = st.selectbox("Channel", CHANNELS,
+                                   index=CHANNELS.index(default_ch), key="draft_channel")
+            if not LLM_ENDPOINT_NAME:
+                st.info("Drafting is disabled — set `LLM_ENDPOINT_NAME` to enable.")
+            elif st.button("✍️ Draft outreach message", key="draft_btn"):
+                with st.spinner("Drafting via the model endpoint..."):
+                    msg = draft_outreach(member, top_action, channel)
+                st.session_state["draft_msg"] = msg or ""
+                if not msg:
+                    st.warning("Could not generate a draft (LLM endpoint unavailable).")
+            if st.session_state.get("draft_msg"):
+                st.text_area("Draft (review & edit before sending)",
+                             st.session_state["draft_msg"], height=170)
+                st.caption("Compliance: review before sending. No PHI is included in the prompt.")
+
+        with tab_whatif:
+            st.caption("Adjust member signals and re-score to see how the recommendation changes.")
+            c1, c2, c3 = st.columns(3)
+            wf_churn = c1.slider("Churn risk", 0.0, 1.0, _f(member, "churn_risk_score"), 0.05, key="wf_churn")
+            wf_eng = c2.slider("Engagement", 0.0, 10.0, _f(member, "engagement_score"), 0.5, key="wf_eng")
+            wf_clin = c3.slider("Clinical risk", 0.0, 1.0, _f(member, "clinical_risk_score"), 0.05, key="wf_clin")
+            wf_gap = st.checkbox("Has preventive gap", value=_f(member, "has_preventive_gap") >= 1, key="wf_gap")
+            if st.button("\U0001f501 Re-score with these values", key="wf_btn"):
+                m2 = dict(member)
+                m2.update({
+                    "churn_risk_score": wf_churn, "engagement_score": wf_eng,
+                    "clinical_risk_score": wf_clin, "has_preventive_gap": 1 if wf_gap else 0,
+                    "is_churn_risk": 1 if wf_churn > 0.5 else 0,
+                    "is_care_mgmt_candidate": 1 if wf_clin > 0.7 else 0,
+                })
+                with st.spinner("Re-scoring..."):
+                    r2 = apply_orchestration(m2, actions, score_actions(m2, actions))
+                new_top = r2[0]
+                if new_top["action_id"] != top["action_id"]:
+                    st.success(f"New top action: **{new_top['action_name']}** (was {top['action_name']})")
+                else:
+                    st.info(f"Top action unchanged: **{new_top['action_name']}**")
+                st.dataframe(
+                    pd.DataFrame(r2)[["rank", "action_name", "score", "channel", "category"]],
+                    use_container_width=True, hide_index=True)
 
     # Member detail expander
     with st.expander("Member Feature Details"):
@@ -678,6 +997,77 @@ def page_change_log():
 
 
 # =============================================================================
+# Page: Ask NBA (Genie agent)
+# =============================================================================
+
+ASK_NBA_SUGGESTIONS = [
+    "How many members have an open care gap by measure?",
+    "Open care gaps by market",
+    "What is the overall gap closure rate?",
+    "NBA acceptance rate by channel",
+    "Average value score by owning team",
+    "Total predicted cost of the churn-risk cohort",
+]
+
+
+def _run_ask_nba(question: str):
+    """Send a question to Genie and append the exchange to session history."""
+    with st.spinner("Asking Genie (first question may wake the SQL warehouse ~30s)..."):
+        res = genie_ask(question, st.session_state.get("genie_conversation_id"))
+    if res.get("conversation_id"):
+        st.session_state["genie_conversation_id"] = res["conversation_id"]
+    st.session_state.setdefault("genie_history", []).append({"q": question, "res": res})
+
+
+def page_ask_nba():
+    st.title("\U0001f4ac Ask NBA")
+    st.caption("Natural-language analytics over the book of business — powered by "
+               "Databricks Genie (Unity Catalog + SQL warehouse).")
+
+    if not GENIE_SPACE_ID:
+        st.warning("Genie is not configured. Set `GENIE_SPACE_ID` (bundle variable "
+                   "`genie_space_id`) to enable this page.")
+        return
+
+    # Suggested questions
+    st.markdown("**Try a question:**")
+    cols = st.columns(3)
+    for i, s in enumerate(ASK_NBA_SUGGESTIONS):
+        if cols[i % 3].button(s, key=f"sugg_{i}", use_container_width=True):
+            _run_ask_nba(s)
+
+    # New-conversation control
+    if st.session_state.get("genie_history"):
+        if st.button("\U0001f504 New conversation"):
+            st.session_state["genie_history"] = []
+            st.session_state["genie_conversation_id"] = None
+
+    # Render conversation history
+    for turn in st.session_state.get("genie_history", []):
+        with st.chat_message("user"):
+            st.markdown(turn["q"])
+        with st.chat_message("assistant"):
+            res = turn["res"]
+            if res.get("error"):
+                st.error(res["error"])
+            else:
+                if res.get("answer"):
+                    st.markdown(res["answer"])
+                if res.get("sql"):
+                    with st.expander("View generated SQL"):
+                        st.code(res["sql"], language="sql")
+                df = res.get("dataframe")
+                if df is not None and not df.empty:
+                    st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Free-form chat input
+    prompt = st.chat_input("Ask a question about members, care gaps, actions...")
+    if prompt:
+        _run_ask_nba(prompt)
+        st.rerun()
+
+
+# =============================================================================
 # Main App Navigation
 # =============================================================================
 
@@ -689,7 +1079,8 @@ def main():
         st.header("NBA Console")
         page = st.radio(
             "Navigate",
-            ["\U0001f3af Member Lookup", "\u2699\ufe0f Manage Actions", "\U0001f4dc Change Log"],
+            ["\U0001f3af Member Lookup", "\u2699\ufe0f Manage Actions",
+             "\U0001f4dc Change Log", "\U0001f4ac Ask NBA"],
             label_visibility="collapsed",
         )
         st.divider()
@@ -699,6 +1090,8 @@ def main():
             st.markdown(f"**Project:** `{LAKEBASE_PROJECT}`")
         st.markdown(f"**Schema:** `{LAKEBASE_SCHEMA}`")
         st.markdown(f"**Model:** `{MODEL_ENDPOINT_NAME}`")
+        if GENIE_SPACE_ID:
+            st.markdown(f"**Genie:** `{GENIE_SPACE_ID}`")
 
     # Route to selected page
     if page == "\U0001f3af Member Lookup":
@@ -707,6 +1100,8 @@ def main():
         page_manage_actions()
     elif page == "\U0001f4dc Change Log":
         page_change_log()
+    elif page == "\U0001f4ac Ask NBA":
+        page_ask_nba()
 
 
 if __name__ == "__main__":

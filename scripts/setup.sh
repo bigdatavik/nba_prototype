@@ -42,6 +42,10 @@ databricks bundle deploy -t "$TARGET"
 
 run_job nba_bootstrap   "$TARGET"   # 6/7 re-run so the app SP is auto-resolved + granted
 
+# Grant the app SP everything the "Ask NBA" (Genie) page needs. No-op unless
+# genie_space_id is set for this target, so non-Genie targets are unaffected.
+grant_genie_access
+
 step "7/7  Start the app"
 databricks bundle run nba_console -t "$TARGET" \
   || warn "Could not auto-start the app; start it from the Apps UI if needed."

@@ -65,6 +65,10 @@ pairs = {
   "CDF_SCHEMA":        g("cdf_schema"),
   "APP_NAME":          g("app_name"),
   "MODEL_ENDPOINT":    g("model_endpoint_name", "nba-scoring-endpoint"),
+  "GENIE_SPACE_ID":    g("genie_space_id"),
+  "WAREHOUSE_ID":      g("warehouse_id"),
+  "GENIE_CATALOG":     g("genie_catalog"),
+  "GENIE_SCHEMA":      g("genie_schema"),
   "WORKSPACE_HOST":    d.get("workspace", {}).get("host", ""),
 }
 for k, val in pairs.items():
@@ -162,6 +166,91 @@ state = d.get("status", {}).get("state", "UNKNOWN")
 print(state)
 sys.exit(0 if state == "SUCCEEDED" else 1)
 '
+}
+
+# Echo the ~/.databrickscfg profile name whose host matches $1, or empty string.
+# Non-bundle CLI calls (apps get, api, sql) run inside the bundle dir would
+# otherwise try to reconcile auth against the bundle's DEFAULT target and fail
+# when it differs from the current target's host — so we pass this profile via -p.
+resolve_profile_for_host() {
+  python3 - "$1" <<'PY'
+import sys, os, configparser
+host = (sys.argv[1] or "").rstrip("/")
+cfg = configparser.ConfigParser()
+try:
+    cfg.read(os.path.expanduser("~/.databrickscfg"))
+except Exception:
+    sys.exit(0)
+for sect in cfg.sections():
+    if cfg[sect].get("host", "").rstrip("/") == host and host:
+        print(sect); break
+PY
+}
+
+# Grant the app service principal everything the Genie "Ask NBA" page needs
+# (idempotent). No-ops unless genie_space_id is set for the target, so other
+# targets are unaffected. Genie runs its generated SQL AS the app SP, so the SP
+# needs: CAN_RUN on the space, CAN_USE on the warehouse, and USE_CATALOG /
+# USE_SCHEMA / SELECT on the analytics schema. Nothing is hardcoded — all values
+# come from the bundle (load_bundle_config).
+grant_genie_access() {
+  if [ -z "${GENIE_SPACE_ID:-}" ]; then
+    say "No genie_space_id for this target — skipping Genie grants."
+    return 0
+  fi
+  step "Granting the app SP access to the Genie space + warehouse + data"
+
+  # Resolve the profile matching this target's host so non-bundle CLI calls
+  # authenticate to the right workspace even from inside the bundle dir.
+  local prof; prof="$(resolve_profile_for_host "$WORKSPACE_HOST")" || true
+  local P=(); [ -n "$prof" ] && P=(-p "$prof")
+
+  local sp=""
+  sp="$(databricks apps get "$APP_NAME" "${P[@]}" -o json 2>/dev/null \
+        | python3 -c 'import sys,json;print(json.load(sys.stdin).get("service_principal_client_id",""))' 2>/dev/null)" || true
+  if [ -z "$sp" ]; then
+    warn "Could not resolve the app service principal for '$APP_NAME'; skipping Genie grants."
+    return 0
+  fi
+
+  # 1) Genie space CAN_RUN
+  local acl
+  acl="$(python3 -c 'import json,sys;print(json.dumps({"access_control_list":[{"service_principal_name":sys.argv[1],"permission_level":"CAN_RUN"}]}))' "$sp")"
+  if databricks api patch "/api/2.0/permissions/genie/${GENIE_SPACE_ID}" "${P[@]}" --json "$acl" >/dev/null 2>&1; then
+    ok "Genie space CAN_RUN -> $sp"
+  else
+    warn "Could not grant CAN_RUN on the Genie space ${GENIE_SPACE_ID}."
+  fi
+
+  # 2) SQL warehouse CAN_USE
+  if [ -n "${WAREHOUSE_ID:-}" ]; then
+    acl="$(python3 -c 'import json,sys;print(json.dumps({"access_control_list":[{"service_principal_name":sys.argv[1],"permission_level":"CAN_USE"}]}))' "$sp")"
+    if databricks api patch "/api/2.0/permissions/warehouses/${WAREHOUSE_ID}" "${P[@]}" --json "$acl" >/dev/null 2>&1; then
+      ok "Warehouse CAN_USE -> $sp"
+    else
+      warn "Could not grant CAN_USE on warehouse ${WAREHOUSE_ID}."
+    fi
+  else
+    warn "No warehouse_id configured — skipping warehouse grant."
+  fi
+
+  # 3) UC grants on the Genie analytics schema (so the SP can run generated SQL)
+  if [ -n "${GENIE_CATALOG:-}" ] && [ -n "${GENIE_SCHEMA:-}" ] && [ -n "${WAREHOUSE_ID:-}" ]; then
+    local stmt
+    for grant in \
+      "USE CATALOG ON CATALOG ${GENIE_CATALOG}" \
+      "USE SCHEMA ON SCHEMA ${GENIE_CATALOG}.${GENIE_SCHEMA}" \
+      "SELECT ON SCHEMA ${GENIE_CATALOG}.${GENIE_SCHEMA}"; do
+      stmt="$(python3 -c 'import json,sys;print(json.dumps({"warehouse_id":sys.argv[1],"statement":"GRANT "+sys.argv[2]+" TO `"+sys.argv[3]+"`","wait_timeout":"30s"}))' "$WAREHOUSE_ID" "$grant" "$sp")"
+      if databricks api post /api/2.0/sql/statements "${P[@]}" --json "$stmt" >/dev/null 2>&1; then
+        ok "GRANT $grant"
+      else
+        warn "GRANT $grant failed."
+      fi
+    done
+  else
+    warn "genie_catalog / genie_schema / warehouse_id not all set — skipping UC SELECT grants."
+  fi
 }
 
 # Check whether an app URL resolves in DNS from this machine, and print guidance

@@ -34,6 +34,12 @@ env:
   # --- Model serving ---
   - name: MODEL_ENDPOINT_NAME
     value: "nba-scoring-endpoint"
+  # --- Genie (Ask NBA page) --- blank by default; set per-target via the bundle
+  - name: GENIE_SPACE_ID
+    value: ""
+  # --- Assist LLM (Member Lookup draft) --- blank disables drafting
+  - name: LLM_ENDPOINT_NAME
+    value: ""
 
 resources:
   - name: lakebase-production
