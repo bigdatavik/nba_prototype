@@ -734,12 +734,70 @@ else:
             except Exception:
                 pass  # Role may already exist
             cur.execute(f'GRANT USAGE ON SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
+            # CREATE lets the app own its own operational tables on app-writes
+            # (e.g. nba_decisions for the Approve & Act loop) \u2014 writable Postgres,
+            # never the read-only synced tables.
+            cur.execute(f'GRANT CREATE ON SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
             cur.execute(f'GRANT ALL ON ALL TABLES IN SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
             cur.execute(f'GRANT USAGE ON ALL SEQUENCES IN SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
 
     conn_new.close()
     print("\u2705 Audit trigger configured on app-writes")
     print("\n\U0001f389 First-time setup complete!")
+
+# ---------------------------------------------------------------------------
+# Always re-apply SP grants on the app-writes branch (idempotent), so a NORMAL
+# run keeps the app's access current \u2014 including CREATE, so the app can own its
+# operational tables (nba_decisions). The fork-time block above only runs when
+# the branch is first created; this makes the notebook's "re-grant after every
+# sync" promise true for app-writes too, without a destructive re-fork.
+# ---------------------------------------------------------------------------
+if NBA_CONSOLE_SP:
+    try:
+        _aw_endpoint = None
+        _aw_host = None
+        for _ep in w.postgres.list_endpoints(parent=APP_WRITES_BRANCH):
+            _aw_endpoint = _ep.name
+            _aw_host = _ep.status.hosts.host
+        _aw_token = w.postgres.generate_database_credential(endpoint=_aw_endpoint).token
+        _aw_conn = psycopg2.connect(
+            host=_aw_host, port=5432, dbname=LAKEBASE_DATABASE,
+            user=db_user, password=_aw_token, sslmode="require",
+        )
+        _aw_conn.autocommit = True
+        with _aw_conn.cursor() as cur:
+            try:
+                cur.execute(f'CREATE ROLE "{NBA_CONSOLE_SP}" LOGIN')
+            except Exception:
+                pass  # role may already exist
+            # Pre-create the Approve & Act decision log so it exists from install
+            # (deterministic); the app also creates it lazily as a fallback. This
+            # is operational app state on the writable app-writes branch.
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {LAKEBASE_SCHEMA}.nba_decisions (
+                    decision_id       BIGSERIAL PRIMARY KEY,
+                    member_id         TEXT NOT NULL,
+                    action_id         TEXT,
+                    action_name       TEXT,
+                    channel           TEXT,
+                    recommended_score DOUBLE PRECISION,
+                    status            TEXT,
+                    disposition       TEXT,
+                    outcome           TEXT,
+                    note              TEXT,
+                    approver          TEXT,
+                    created_at        TIMESTAMPTZ DEFAULT now()
+                )
+            """)
+            cur.execute(f'GRANT USAGE ON SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
+            cur.execute(f'GRANT CREATE ON SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
+            cur.execute(f'GRANT ALL ON ALL TABLES IN SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
+            cur.execute(f'GRANT USAGE ON ALL SEQUENCES IN SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
+        _aw_conn.close()
+        print("\u2705 app-writes: ensured nba_decisions + re-applied SP grants "
+              "(USAGE, CREATE, ALL TABLES, SEQUENCES)")
+    except Exception as _e:
+        print(f"\u26a0\ufe0f  Could not re-apply app-writes SP grants: {_e}")
 
 
 # COMMAND ----------

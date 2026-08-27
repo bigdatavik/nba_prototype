@@ -607,6 +607,114 @@ def get_change_log() -> pd.DataFrame:
 
 
 # =============================================================================
+# Decisions — Approve & Act (closed loop)
+# =============================================================================
+# Committed NBA decisions are written to the APP-WRITES branch (writable
+# Postgres — never the read-only synced tables), and read back on the next
+# request so the loop closes. The table is created lazily (the app SP has
+# CAN_CONNECT_AND_CREATE on app-writes).
+
+DECISIONS_TABLE = "nba_decisions"
+_DECISIONS_DDL = f"""
+CREATE TABLE IF NOT EXISTS {LAKEBASE_SCHEMA}.{DECISIONS_TABLE} (
+  decision_id       BIGSERIAL PRIMARY KEY,
+  member_id         TEXT NOT NULL,
+  action_id         TEXT,
+  action_name       TEXT,
+  channel           TEXT,
+  recommended_score DOUBLE PRECISION,
+  status            TEXT,
+  disposition       TEXT,
+  outcome           TEXT,
+  note              TEXT,
+  approver          TEXT,
+  created_at        TIMESTAMPTZ DEFAULT now()
+)
+"""
+
+
+def ensure_decisions_table() -> bool:
+    """Best-effort create of the decisions table. The table is normally created
+    with the SP's CREATE grant (bootstrap); if CREATE isn't permitted we swallow
+    it and let read/write surface any real issue (the table may already exist)."""
+    conn = get_app_writes_connection()
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(_DECISIONS_DDL)
+    except Exception:
+        pass  # already exists, or no CREATE — reads/writes will report if needed
+    return True
+
+
+def record_decision(member_id, action_id, action_name, channel, score,
+                    status, disposition, note, approver) -> bool:
+    ensure_decisions_table()
+    conn = get_app_writes_connection()
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""INSERT INTO {LAKEBASE_SCHEMA}.{DECISIONS_TABLE}
+                    (member_id, action_id, action_name, channel, recommended_score,
+                     status, disposition, note, approver)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                (member_id, action_id, action_name, channel, float(score or 0),
+                 status, disposition, note or None, approver or None),
+            )
+        return True
+    except Exception as e:
+        st.error(f"Could not write decision (app SP may lack CREATE/INSERT on "
+                 f"{LAKEBASE_SCHEMA}): {e}")
+        return False
+
+
+def get_decisions(member_id: Optional[str] = None, limit: int = 100) -> list:
+    ensure_decisions_table()
+    conn = get_app_writes_connection()
+    if not conn:
+        return []
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            if member_id:
+                cur.execute(
+                    f"SELECT * FROM {LAKEBASE_SCHEMA}.{DECISIONS_TABLE} "
+                    f"WHERE member_id = %s ORDER BY created_at DESC LIMIT %s",
+                    (member_id, limit))
+            else:
+                cur.execute(
+                    f"SELECT * FROM {LAKEBASE_SCHEMA}.{DECISIONS_TABLE} "
+                    f"ORDER BY created_at DESC LIMIT %s", (limit,))
+            return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def update_decision_outcome(decision_id, outcome: str) -> bool:
+    conn = get_app_writes_connection()
+    if not conn:
+        return False
+    with conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {LAKEBASE_SCHEMA}.{DECISIONS_TABLE} SET outcome = %s "
+            f"WHERE decision_id = %s", (outcome, decision_id))
+    return True
+
+
+def get_app_user() -> str:
+    """Best-effort end-user email forwarded by Databricks Apps (else blank)."""
+    try:
+        ctx = getattr(st, "context", None)
+        if ctx is not None and getattr(ctx, "headers", None):
+            return ctx.headers.get("X-Forwarded-Email") or ""
+    except Exception:
+        pass
+    return ""
+
+
+# =============================================================================
 # Genie Conversation API (Ask NBA page)
 # =============================================================================
 # The app calls the Genie Conversation API with its own injected credentials
@@ -769,8 +877,8 @@ def page_member_lookup():
         st.subheader("\U0001f9e0 Assist")
         top = ranked[0]
         top_action = next((a for a in actions if a["action_id"] == top["action_id"]), {})
-        tab_why, tab_draft, tab_whatif = st.tabs(
-            ["Why this action", "Draft outreach", "What-if"])
+        tab_why, tab_draft, tab_whatif, tab_act = st.tabs(
+            ["Why this action", "Draft outreach", "What-if", "Approve & act"])
 
         with tab_why:
             score = float(top["score"])
@@ -846,6 +954,44 @@ def page_member_lookup():
                 st.dataframe(
                     pd.DataFrame(r2)[["rank", "action_name", "score", "channel", "category"]],
                     use_container_width=True, hide_index=True)
+
+        with tab_act:
+            st.caption("Approve or adjust the recommendation, then commit. The decision "
+                       "is written to the app-writes branch and appears below (closed loop).")
+            act_name = st.selectbox("Action to act on", [r["action_name"] for r in ranked],
+                                    index=0, key="act_action")
+            act_rank = next(r for r in ranked if r["action_name"] == act_name)
+            ac1, ac2 = st.columns(2)
+            ch_default = act_rank["channel"] if act_rank["channel"] in CHANNELS else CHANNELS[0]
+            act_channel = ac1.selectbox("Channel", CHANNELS,
+                                        index=CHANNELS.index(ch_default), key="act_channel")
+            act_disp = ac2.selectbox("Disposition",
+                                     ["Outreach scheduled", "Attempted", "Declined by member", "Deferred"],
+                                     key="act_disp")
+            act_note = st.text_input("Note (optional)", key="act_note")
+            act_approver = st.text_input("Approver", value=get_app_user() or "care_coordinator",
+                                         key="act_approver")
+            bc1, bc2 = st.columns([3, 1])
+            if bc1.button("✅ Approve & commit", type="primary", key="act_commit"):
+                if record_decision(selected_member, act_rank["action_id"], act_name,
+                                   act_channel, act_rank["score"], "Approved",
+                                   act_disp, act_note, act_approver):
+                    st.success(f"Decision committed: {selected_member} → {act_name} via {act_channel}.")
+                else:
+                    st.error("Could not write the decision to the app-writes branch.")
+            if bc2.button("🗑️ Dismiss", key="act_dismiss"):
+                if record_decision(selected_member, act_rank["action_id"], act_name,
+                                   act_channel, act_rank["score"], "Dismissed",
+                                   "Dismissed", act_note, act_approver):
+                    st.info("Recommendation dismissed and logged.")
+
+            hist = get_decisions(selected_member)
+            if hist:
+                st.markdown("**Decisions for this member:**")
+                hcols = ["created_at", "action_name", "channel", "status",
+                         "disposition", "outcome", "approver"]
+                st.dataframe(pd.DataFrame(hist)[hcols],
+                             use_container_width=True, hide_index=True)
 
     # Member detail expander
     with st.expander("Member Feature Details"):
@@ -1068,6 +1214,45 @@ def page_ask_nba():
 
 
 # =============================================================================
+# Page: Decisions (Approve & Act audit + outcome capture)
+# =============================================================================
+
+def page_decisions():
+    st.title("✅ Decisions")
+    st.caption("Closed-loop audit of committed NBA decisions (app-writes branch). "
+               "Record outcomes as they land — reflected on the next read.")
+
+    rows = get_decisions()
+    if not rows:
+        st.info("No decisions yet. Approve one on **Member Lookup → \U0001f9e0 Assist → Approve & act**.")
+        return
+
+    df = pd.DataFrame(rows)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total decisions", len(df))
+    c2.metric("Approved", int((df["status"] == "Approved").sum()))
+    c3.metric("Outcomes recorded", int(df["outcome"].notna().sum()))
+
+    st.dataframe(
+        df[["created_at", "member_id", "action_name", "channel", "status",
+            "disposition", "outcome", "approver"]],
+        use_container_width=True, hide_index=True)
+
+    st.divider()
+    st.subheader("Record an outcome")
+    opts = {f"#{r['decision_id']} · {r['member_id']} · {r['action_name']} ({r['status']})":
+            r["decision_id"] for r in rows}
+    sel = st.selectbox("Decision", list(opts.keys()))
+    outcome = st.selectbox("Outcome",
+                           ["Gap Closed", "Enrolled", "Retained", "No Response", "None"])
+    if st.button("\U0001f4be Save outcome"):
+        if update_decision_outcome(opts[sel], outcome):
+            st.success("Outcome saved — reflected on next read.")
+        else:
+            st.error("Could not update the outcome.")
+
+
+# =============================================================================
 # Main App Navigation
 # =============================================================================
 
@@ -1079,7 +1264,7 @@ def main():
         st.header("NBA Console")
         page = st.radio(
             "Navigate",
-            ["\U0001f3af Member Lookup", "\u2699\ufe0f Manage Actions",
+            ["\U0001f3af Member Lookup", "\u2705 Decisions", "\u2699\ufe0f Manage Actions",
              "\U0001f4dc Change Log", "\U0001f4ac Ask NBA"],
             label_visibility="collapsed",
         )
@@ -1096,6 +1281,8 @@ def main():
     # Route to selected page
     if page == "\U0001f3af Member Lookup":
         page_member_lookup()
+    elif page == "\u2705 Decisions":
+        page_decisions()
     elif page == "\u2699\ufe0f Manage Actions":
         page_manage_actions()
     elif page == "\U0001f4dc Change Log":
