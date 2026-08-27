@@ -119,6 +119,25 @@ resources:
               nba_console_sp: ${var.nba_console_sp}
               nba_console_app_name: ${var.app_name}
 
+    nba_reconcile_decisions:
+      # Learning half of the Approve & Act loop: publish app decisions from the
+      # Lakebase app-writes branch (nba_decisions) into a governed UC table via
+      # Lakebase CDF. No production re-sync (decisions are operational app state).
+      name: "[${bundle.target}] NBA — Reconcile decisions (CDF → UC)"
+      tasks:
+        - task_key: reconcile_decisions
+          notebook_task:
+            notebook_path: ../src/notebooks/reconcile_nba_decisions.py
+            base_parameters:
+              uc_catalog: ${var.uc_catalog}
+              uc_schema: ${var.uc_schema}
+              lakebase_database_id: ${var.lakebase_database_id}
+              lakebase_schema: ${var.lakebase_schema}
+              lakebase_project: ${var.lakebase_project}
+              app_writes_branch: ${var.app_writes_branch}
+              cdf_catalog: ${var.cdf_catalog}
+              cdf_schema: ${var.cdf_schema}
+
     nba_train_model:
       name: "[${bundle.target}] NBA — Train + deploy scoring model"
       tasks:

@@ -246,6 +246,10 @@ CDF_SCHEMA = dbutils.widgets.get("cdf_schema")
 CDF_HISTORY_TABLE = f"{CDF_CATALOG}.{CDF_SCHEMA}.lb_action_catalog_history"
 CDF_WATERMARK_TABLE = f"{CDF_CATALOG}.{CDF_SCHEMA}.action_catalog_watermark"
 UC_ACTION_CATALOG = f"{UC_CATALOG}.{UC_SCHEMA}.action_catalog"
+# Decisions (Approve & Act) — governed UC net-state + its CDF history table.
+# Reconciled by reconcile_nba_decisions (CDF → UC); no production re-sync.
+UC_DECISIONS = f"{UC_CATALOG}.{UC_SCHEMA}.nba_decisions"
+CDF_DECISIONS_HISTORY = f"{CDF_CATALOG}.{CDF_SCHEMA}.lb_nba_decisions_history"
 
 # Tables to sync
 # member_features: always synced (daily refresh from feature pipeline)
@@ -841,7 +845,7 @@ _NEEDS_CDF_ENABLE = _RESET or bool(globals().get("APP_WRITES_BRANCH_CREATED", Fa
 
 # 1) Dedicated CDF schema + watermark table (idempotent, safe every run)
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CDF_CATALOG}.{CDF_SCHEMA} "
-          f"COMMENT 'Lakebase CDF destination history + watermark for action_catalog'")
+          f"COMMENT 'Lakebase CDF destination history + watermark for action_catalog + nba_decisions'")
 spark.sql(f"""
     CREATE TABLE IF NOT EXISTS {CDF_WATERMARK_TABLE} (
         table_name STRING,
@@ -849,8 +853,29 @@ spark.sql(f"""
         updated_at TIMESTAMP
     )
 """)
+# Governed UC net-state for the Approve & Act decision log (populated by
+# reconcile_nba_decisions from the CDF history). Pre-created so it exists on
+# every rebuild and can be referenced by Genie / dashboards immediately.
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {UC_DECISIONS} (
+        decision_id       BIGINT,
+        member_id         STRING,
+        action_id         STRING,
+        action_name       STRING,
+        channel           STRING,
+        recommended_score DOUBLE,
+        status            STRING,
+        disposition       STRING,
+        outcome           STRING,
+        note              STRING,
+        approver          STRING,
+        created_at        TIMESTAMP
+    ) USING DELTA
+    COMMENT 'Governed net-state NBA decision log (reconciled from Lakebase CDF). Learning half of the Approve & Act closed loop.'
+""")
 print(f"\u2705 CDF schema ready: {CDF_CATALOG}.{CDF_SCHEMA}")
 print(f"   watermark: {CDF_WATERMARK_TABLE}")
+print(f"   governed decisions table: {UC_DECISIONS}")
 
 if _RESET:
     # 2) Reset path \u2014 the branch was just re-forked, so the CDF feed is being
@@ -860,28 +885,29 @@ if _RESET:
     print("RESET MODE \u2014 preparing CDF for a fresh feed")
     print("=" * 60)
     spark.sql(f"DROP TABLE IF EXISTS {CDF_HISTORY_TABLE}")
-    print(f"\u2705 Dropped stale history table: {CDF_HISTORY_TABLE}")
+    spark.sql(f"DROP TABLE IF EXISTS {CDF_DECISIONS_HISTORY}")
+    print(f"\u2705 Dropped stale history tables: {CDF_HISTORY_TABLE}, {CDF_DECISIONS_HISTORY}")
     spark.sql(f"""
         MERGE INTO {CDF_WATERMARK_TABLE} w
-        USING (SELECT '{UC_ACTION_CATALOG}' AS table_name,
-                      CAST(-1 AS BIGINT)     AS last_lsn,
-                      current_timestamp()    AS updated_at) s
+        USING (SELECT col1 AS table_name, CAST(-1 AS BIGINT) AS last_lsn,
+                      current_timestamp() AS updated_at
+               FROM VALUES ('{UC_ACTION_CATALOG}'), ('{UC_DECISIONS}')) s
         ON w.table_name = s.table_name
         WHEN MATCHED THEN UPDATE SET last_lsn = s.last_lsn, updated_at = s.updated_at
         WHEN NOT MATCHED THEN INSERT *
     """)
-    print(f"\u2705 Watermark reset to -1 for {UC_ACTION_CATALOG}")
+    print(f"\u2705 Watermarks reset to -1 for {UC_ACTION_CATALOG} + {UC_DECISIONS}")
 else:
-    # Normal run \u2014 ensure a watermark row exists (starts at -1 on first ever run).
+    # Normal run \u2014 ensure watermark rows exist (start at -1 on first ever run).
     spark.sql(f"""
         MERGE INTO {CDF_WATERMARK_TABLE} w
-        USING (SELECT '{UC_ACTION_CATALOG}' AS table_name,
-                      CAST(-1 AS BIGINT)     AS last_lsn,
-                      current_timestamp()    AS updated_at) s
+        USING (SELECT col1 AS table_name, CAST(-1 AS BIGINT) AS last_lsn,
+                      current_timestamp() AS updated_at
+               FROM VALUES ('{UC_ACTION_CATALOG}'), ('{UC_DECISIONS}')) s
         ON w.table_name = s.table_name
         WHEN NOT MATCHED THEN INSERT *
     """)
-    print("\n\u2139\ufe0f  CDF watermark row ensured (reconcile advances it).")
+    print("\n\u2139\ufe0f  CDF watermark rows ensured (reconcile advances them).")
 
 # The actual turning-on of CDF happens in the next cell (via the API).
 
