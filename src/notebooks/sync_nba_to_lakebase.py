@@ -789,6 +789,15 @@ if NBA_CONSOLE_SP:
                     created_at        TIMESTAMPTZ DEFAULT now()
                 )
             """)
+            # REPLICA IDENTITY FULL makes Lakebase CDF capture nba_decisions
+            # (same requirement as action_catalog) and emit full before-images on
+            # UPDATE (e.g. when an outcome is recorded) → the decision log streams
+            # to UC as <cdf_catalog>.<cdf_schema>.lb_nba_decisions_history. Only the
+            # table owner can set it; on app-created installs the app sets it itself.
+            try:
+                cur.execute(f'ALTER TABLE {LAKEBASE_SCHEMA}.nba_decisions REPLICA IDENTITY FULL')
+            except Exception:
+                pass
             cur.execute(f'GRANT USAGE ON SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
             cur.execute(f'GRANT CREATE ON SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')
             cur.execute(f'GRANT ALL ON ALL TABLES IN SCHEMA {LAKEBASE_SCHEMA} TO "{NBA_CONSOLE_SP}"')

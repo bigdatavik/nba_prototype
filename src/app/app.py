@@ -645,6 +645,13 @@ def ensure_decisions_table() -> bool:
             cur.execute(_DECISIONS_DDL)
     except Exception:
         pass  # already exists, or no CREATE — reads/writes will report if needed
+    # Make the table CDF-ready (full before-images). Only the owner can; when the
+    # table was pre-created by bootstrap this no-ops, which is fine.
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"ALTER TABLE {LAKEBASE_SCHEMA}.{DECISIONS_TABLE} REPLICA IDENTITY FULL")
+    except Exception:
+        pass
     return True
 
 
