@@ -119,6 +119,25 @@ resources:
               nba_console_sp: ${var.nba_console_sp}
               nba_console_app_name: ${var.app_name}
 
+    nba_seed_decisions:
+      # Demo helper: generate realistic synthetic Approve & Act decisions into the
+      # Lakebase app-writes nba_decisions table (→ CDF → nba_reconcile_decisions),
+      # so the decision log + governed UC table + Genie room have enough volume.
+      name: "[${bundle.target}] NBA — Seed dummy decisions"
+      tasks:
+        - task_key: seed_decisions
+          notebook_task:
+            notebook_path: ../src/notebooks/seed_nba_decisions.py
+            base_parameters:
+              uc_catalog: ${var.uc_catalog}
+              uc_schema: ${var.uc_schema}
+              lakebase_project: ${var.lakebase_project}
+              app_writes_branch: ${var.app_writes_branch}
+              lakebase_database: ${var.lakebase_database}
+              lakebase_schema: ${var.lakebase_schema}
+              num_decisions: "200"
+              truncate_first: "false"
+
     nba_reconcile_decisions:
       # Learning half of the Approve & Act loop: publish app decisions from the
       # Lakebase app-writes branch (nba_decisions) into a governed UC table via

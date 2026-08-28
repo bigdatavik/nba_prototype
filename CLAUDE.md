@@ -11,8 +11,13 @@ code deploys to any workspace by changing configuration only.
 Components:
 - **Notebooks** (`src/notebooks/`) — UC → Lakebase sync, reconciliation, and
   model training/deployment.
-- **Streamlit app** (`src/app/`) — the `nba-console` (Member Lookup, Manage
-  Actions, Change Log).
+- **Streamlit app** (`src/app/`) — the `nba-console`. Pages: **Member Lookup**
+  (score + rank, plus a per-member **🧠 Assist**: *Why this action* reason codes /
+  score-vs-threshold / trajectory, LLM **Draft outreach**, **What-if** re-score,
+  and **Approve & act** — a human approves/edits a recommendation, committed to
+  the app-writes Postgres branch), **✅ Decisions** (Approve & Act audit + outcome
+  capture), **Manage Actions**, **Change Log**, and **💬 Ask NBA** (Genie
+  Conversation API over UC for population analytics).
 - **Bundle** (`databricks.yml`, `resources/`) — jobs + app, parameterized by
   variables per target (`dev`, `prod`). The real `databricks.yml` is **gitignored**;
   only `databricks.yml.template` is committed. Copy it (`cp databricks.yml.template
@@ -64,6 +69,8 @@ databricks bundle run nba_bootstrap   -t dev   # reset + seed Lakebase
 databricks bundle run nba_reconcile   -t dev   # publish app edits UC → production (day-2)
 databricks bundle run nba_daily_sync  -t dev   # refresh member_features only (day-2)
 databricks bundle run nba_reset_action_catalog -t dev  # actions → 16 baseline rows (non-destructive)
+databricks bundle run nba_seed_decisions -t dev  # generate dummy Approve & Act decisions (demo volume)
+databricks bundle run nba_reconcile_decisions -t dev  # publish decisions Lakebase CDF → governed UC (day-2)
 databricks bundle run nba_console     -t dev   # start the app
 
 # App logs
@@ -165,7 +172,24 @@ python -m py_compile src/app/app.py
   the app-writes branch is permanent). After a business user edits an action in
   the app, run `nba_reconcile` — it re-syncs production itself, so no separate
   catalog refresh is needed. `reset_environment=true` (`nba_bootstrap`) is the
-  only destructive job.
+  only destructive job. **`nba_reconcile_decisions`** owns `nba_decisions` (the
+  app's **Approve & Act** decisions): reads the Lakebase CDF
+  `lb_nba_decisions_history` by LSN watermark → MERGEs net-state into the governed
+  UC `nba_decisions` (the *learning half* of the closed loop). **No production
+  re-sync** — decisions are operational app state, written to app-writes and read
+  back there. `nba_seed_decisions` generates dummy decisions for demo volume.
+- **Decisions table (`nba_decisions`)** lives on the **app-writes** Postgres
+  branch (writable; never the read-only synced tables). Bootstrap pre-creates it
+  with **`REPLICA IDENTITY FULL`** (the requirement for Lakebase CDF to capture a
+  table, same as `action_catalog`) and grants the app SP **`CREATE ON SCHEMA`** so
+  it can own its operational tables. The schema-level CDF config then replicates
+  it to UC as `<cdf_catalog>.<cdf_schema>.lb_nba_decisions_history`.
+- **Genie / "Ask NBA"**: the Genie **space** is provisioned by a *separate* project
+  (`~/nba_payer_genie_tutorial`, its own bundle) over UC; the app just references
+  it via the `genie_space_id` variable → `GENIE_SPACE_ID` env var. `setup.sh`
+  grants the app SP everything Genie needs (space CAN_RUN, warehouse CAN_USE, UC
+  SELECT). The Assist **Draft outreach** uses a Foundation Model chat endpoint via
+  the `llm_endpoint_name` variable → `LLM_ENDPOINT_NAME` (blank disables drafting).
 - **Databricks SDK** must be `>= 0.118.0` for `w.postgres.*`; notebooks `%pip`
   install it and restart Python automatically.
 - **App URL `ERR_NAME_NOT_RESOLVED` after a destroy+recreate** is NOT an app
