@@ -64,6 +64,7 @@ pairs = {
   "CDF_CATALOG":       g("cdf_catalog"),
   "CDF_SCHEMA":        g("cdf_schema"),
   "APP_NAME":          g("app_name"),
+  "APP_NAME_REACT":    g("app_name_react"),
   "MODEL_ENDPOINT":    g("model_endpoint_name", "nba-scoring-endpoint"),
   "GENIE_SPACE_ID":    g("genie_space_id"),
   "WAREHOUSE_ID":      g("warehouse_id"),
@@ -187,18 +188,26 @@ for sect in cfg.sections():
 PY
 }
 
-# Grant the app service principal everything the Genie "Ask NBA" page needs
+# Grant an app service principal everything the Genie "Ask NBA" page needs
 # (idempotent). No-ops unless genie_space_id is set for the target, so other
 # targets are unaffected. Genie runs its generated SQL AS the app SP, so the SP
 # needs: CAN_RUN on the space, CAN_USE on the warehouse, and USE_CATALOG /
 # USE_SCHEMA / SELECT on the analytics schema. Nothing is hardcoded — all values
 # come from the bundle (load_bundle_config).
+#
+# Usage: grant_genie_access [app_name]   (defaults to $APP_NAME — the Streamlit
+# app; pass $APP_NAME_REACT to grant the React app's SP the same access).
 grant_genie_access() {
+  local app_name="${1:-$APP_NAME}"
   if [ -z "${GENIE_SPACE_ID:-}" ]; then
-    say "No genie_space_id for this target — skipping Genie grants."
+    say "No genie_space_id for this target — skipping Genie grants for '$app_name'."
     return 0
   fi
-  step "Granting the app SP access to the Genie space + warehouse + data"
+  if [ -z "$app_name" ]; then
+    say "No app name given — skipping Genie grants."
+    return 0
+  fi
+  step "Granting the app SP ($app_name) access to the Genie space + warehouse + data"
 
   # Resolve the profile matching this target's host so non-bundle CLI calls
   # authenticate to the right workspace even from inside the bundle dir.
@@ -206,10 +215,10 @@ grant_genie_access() {
   local P=(); [ -n "$prof" ] && P=(-p "$prof")
 
   local sp=""
-  sp="$(databricks apps get "$APP_NAME" "${P[@]}" -o json 2>/dev/null \
+  sp="$(databricks apps get "$app_name" "${P[@]}" -o json 2>/dev/null \
         | python3 -c 'import sys,json;print(json.load(sys.stdin).get("service_principal_client_id",""))' 2>/dev/null)" || true
   if [ -z "$sp" ]; then
-    warn "Could not resolve the app service principal for '$APP_NAME'; skipping Genie grants."
+    warn "Could not resolve the app service principal for '$app_name'; skipping Genie grants."
     return 0
   fi
 

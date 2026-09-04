@@ -10,7 +10,9 @@
 #
 # One bundle deploys the whole system to any workspace:
 #   • seed + sync + reconcile + model-training jobs (Lakeflow)
-#   • the nba-console Databricks App (Streamlit)
+#   • the nba-console Databricks App (Streamlit)  — app_name
+#   • the nba-console React + FastAPI Databricks App — app_name_react
+#     (both apps share the same env-var contract + Lakebase/endpoint resources)
 #
 # Everything environment-specific is a variable below and is passed to the
 # notebooks as job parameters (widgets) and to the app via its resource config.
@@ -79,6 +81,12 @@ variables:
   app_name:
     description: Databricks App name (also used to auto-resolve its SP).
     default: nba-console
+  app_name_react:
+    description: >-
+      Databricks App name for the React + FastAPI NBA console. Coexists with the
+      Streamlit app (app_name); also used to auto-resolve its SP. Both apps are
+      deployed by the bundle and started by setup.sh.
+    default: nba-console-react
   nba_console_sp:
     description: >-
       App service principal client id used for Lakebase GRANTs. Leave blank to
@@ -126,6 +134,7 @@ targets:
       lakebase_project: nba-lakebase
       lakebase_schema: nba_new_lbase
       app_name: nba-console-dev
+      app_name_react: nba-console-dev-react
 
   # Example: an additional environment target. Copy/rename per workspace.
   # myenv:
@@ -152,3 +161,4 @@ targets:
       lakebase_project: nba-lakebase
       lakebase_schema: nba_new_lbase
       app_name: nba-console
+      app_name_react: nba-console-react
