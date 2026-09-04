@@ -79,7 +79,7 @@ def score_actions(member_features: dict, actions: list) -> list:
             else:
                 log.warning("Model endpoint returned %s. Using value_score fallback.",
                             resp.status_code)
-                return [a["value_score"] / 100.0 for a in actions]
+                return [float(a.get("value_score", 0) or 0) / 100.0 for a in actions]
         except requests.exceptions.ReadTimeout:
             if attempt < max_attempts - 1:
                 log.info("Model endpoint waking from cold start (~60s) retry %d/%d",
@@ -87,10 +87,10 @@ def score_actions(member_features: dict, actions: list) -> list:
                 continue
             else:
                 log.warning("Model endpoint timed out after retries. Using value_score fallback.")
-                return [a["value_score"] / 100.0 for a in actions]
+                return [float(a.get("value_score", 0) or 0) / 100.0 for a in actions]
 
     log.warning("Model endpoint unavailable. Using value_score fallback.")
-    return [a["value_score"] / 100.0 for a in actions]
+    return [float(a.get("value_score", 0) or 0) / 100.0 for a in actions]
 
 
 # =============================================================================

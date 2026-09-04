@@ -48,15 +48,21 @@ if _DIST.exists():
     def index():
         return FileResponse(str(_INDEX))
 
+    _DIST_RESOLVED = _DIST.resolve()
+
     @app.get("/{full_path:path}")
     def spa(full_path: str):
         # Never shadow the API.
         if full_path.startswith("api/"):
             return JSONResponse({"detail": "Not found"}, status_code=404)
         # Serve real files (favicon, etc.) if present; otherwise SPA fallback.
-        candidate = _DIST / full_path
-        if full_path and candidate.is_file():
-            return FileResponse(str(candidate))
+        # Guard against path traversal: the resolved candidate must stay inside
+        # _DIST, so `../backend/config.py` (or percent-encoded variants) can't
+        # escape the static dir and disclose source.
+        if full_path:
+            candidate = (_DIST / full_path).resolve()
+            if candidate.is_file() and candidate.is_relative_to(_DIST_RESOLVED):
+                return FileResponse(str(candidate))
         return FileResponse(str(_INDEX))
 else:
     @app.get("/")

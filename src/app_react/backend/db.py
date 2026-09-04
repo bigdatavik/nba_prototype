@@ -11,6 +11,7 @@ on connection failure; credentials come from the Lakebase credentials REST API
 using the app SP's injected auth (Config().authenticate()).
 """
 
+import re
 import time
 import logging
 from typing import Optional
@@ -241,37 +242,68 @@ def get_action_catalog_staged() -> list:
 # CRUD Operations (for Manage Actions page)
 # =============================================================================
 
+# Column names arrive as dict KEYS from the REST body and are interpolated into
+# the SQL text (only VALUES are parameterized), so they must be validated to
+# prevent SQL injection. A legitimate column is a plain SQL identifier; we do
+# NOT quote it — leaving it bare preserves Postgres' case-folding exactly as the
+# original code relied on, while the strict pattern makes injection impossible
+# (any payload needs characters this pattern rejects: spaces, ';', '=', etc.).
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _safe_ident(name) -> str:
+    if not isinstance(name, str) or not _IDENT_RE.match(name):
+        raise ValueError(f"Invalid column identifier: {name!r}")
+    return name
+
+
 def add_action(action_data: dict) -> bool:
     conn = get_app_writes_connection()
     if not conn:
         return False
-    cols = list(action_data.keys())
-    vals = [action_data[c] for c in cols]
-    placeholders = ", ".join(["%s"] * len(cols))
-    col_names = ", ".join(cols)
-    with conn.cursor() as cur:
-        cur.execute(f"INSERT INTO {LAKEBASE_SCHEMA}.action_catalog ({col_names}) VALUES ({placeholders})", vals)
-    return True
+    try:
+        cols = list(action_data.keys())
+        if not cols:
+            return False
+        col_names = ", ".join(_safe_ident(c) for c in cols)
+        vals = [action_data[c] for c in cols]
+        placeholders = ", ".join(["%s"] * len(cols))
+        with conn.cursor() as cur:
+            cur.execute(f"INSERT INTO {LAKEBASE_SCHEMA}.action_catalog ({col_names}) VALUES ({placeholders})", vals)
+        return True
+    except Exception as e:
+        log.error("add_action failed: %s", e)
+        return False
 
 
 def update_action(action_id: str, updates: dict) -> bool:
     conn = get_app_writes_connection()
     if not conn:
         return False
-    set_clause = ", ".join([f"{k} = %s" for k in updates.keys()])
-    vals = list(updates.values()) + [action_id]
-    with conn.cursor() as cur:
-        cur.execute(f"UPDATE {LAKEBASE_SCHEMA}.action_catalog SET {set_clause} WHERE action_id = %s", vals)
-    return True
+    try:
+        if not updates:
+            return False
+        set_clause = ", ".join(f"{_safe_ident(k)} = %s" for k in updates.keys())
+        vals = list(updates.values()) + [action_id]
+        with conn.cursor() as cur:
+            cur.execute(f"UPDATE {LAKEBASE_SCHEMA}.action_catalog SET {set_clause} WHERE action_id = %s", vals)
+            return cur.rowcount > 0
+    except Exception as e:
+        log.error("update_action failed: %s", e)
+        return False
 
 
 def delete_action(action_id: str) -> bool:
     conn = get_app_writes_connection()
     if not conn:
         return False
-    with conn.cursor() as cur:
-        cur.execute(f"DELETE FROM {LAKEBASE_SCHEMA}.action_catalog WHERE action_id = %s", (action_id,))
-    return True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"DELETE FROM {LAKEBASE_SCHEMA}.action_catalog WHERE action_id = %s", (action_id,))
+            return cur.rowcount > 0
+    except Exception as e:
+        log.error("delete_action failed: %s", e)
+        return False
 
 
 def get_change_log() -> list:
@@ -309,11 +341,21 @@ CREATE TABLE IF NOT EXISTS {LAKEBASE_SCHEMA}.{DECISIONS_TABLE} (
 """
 
 
+# The DDL only needs to run once per process — bootstrap normally pre-creates
+# the table, so this is just a self-heal. Guard with a flag so we don't open an
+# extra connection + issue two DDL statements on every decisions read/write.
+_decisions_ready = False
+
+
 def ensure_decisions_table() -> bool:
-    """Best-effort create of the decisions table (see Streamlit original)."""
+    """Best-effort create of the decisions table (see Streamlit original).
+    Runs at most once per process (idempotent CREATE IF NOT EXISTS)."""
+    global _decisions_ready
+    if _decisions_ready:
+        return True
     conn = get_app_writes_connection()
     if not conn:
-        return False
+        return False  # transient — retry on the next call (flag stays unset)
     try:
         with conn.cursor() as cur:
             cur.execute(_DECISIONS_DDL)
@@ -324,6 +366,7 @@ def ensure_decisions_table() -> bool:
             cur.execute(f"ALTER TABLE {LAKEBASE_SCHEMA}.{DECISIONS_TABLE} REPLICA IDENTITY FULL")
     except Exception:
         pass
+    _decisions_ready = True
     return True
 
 
@@ -375,8 +418,12 @@ def update_decision_outcome(decision_id, outcome: str) -> bool:
     conn = get_app_writes_connection()
     if not conn:
         return False
-    with conn.cursor() as cur:
-        cur.execute(
-            f"UPDATE {LAKEBASE_SCHEMA}.{DECISIONS_TABLE} SET outcome = %s "
-            f"WHERE decision_id = %s", (outcome, decision_id))
-    return True
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE {LAKEBASE_SCHEMA}.{DECISIONS_TABLE} SET outcome = %s "
+                f"WHERE decision_id = %s", (outcome, decision_id))
+            return cur.rowcount > 0
+    except Exception as e:
+        log.error("update_decision_outcome failed: %s", e)
+        return False

@@ -42,7 +42,9 @@ resources:
           postgres:
             branch: projects/${var.lakebase_project}/branches/${var.lakebase_branch}
             database: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/databases/${var.lakebase_database_id}
-            permission: CAN_CONNECT_AND_CREATE
+            # Read-only path — no writes/DDL on production (all CRUD is on the
+            # app-writes branch), so CAN_CONNECT is sufficient. Matches app.yaml.
+            permission: CAN_CONNECT
         - name: lakebase-app-writes
           description: "CRUD path — action_catalog + audit (app-writes branch)."
           postgres:
