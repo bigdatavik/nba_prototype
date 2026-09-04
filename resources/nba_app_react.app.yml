@@ -1,0 +1,56 @@
+# =============================================================================
+# Databricks App — nba-console-react (React + FastAPI)
+# Coexists with the Streamlit `nba_console` app; same env-var contract.
+# Start after deploy:  databricks bundle run nba_console_react -t genie
+# =============================================================================
+resources:
+  apps:
+    nba_console_react:
+      name: ${var.app_name_react}
+      description: "NBA console (React + FastAPI) — Lakebase + Model Serving + Genie."
+      source_code_path: ../src/app_react
+
+      config:
+        command:
+          - uvicorn
+          - backend.main:app
+          - --host
+          - "0.0.0.0"
+          - --port
+          - "8000"
+        env:
+          - name: LAKEBASE_PROJECT
+            value: ${var.lakebase_project}
+          - name: LAKEBASE_BRANCH_PRODUCTION
+            value: ${var.lakebase_branch}
+          - name: LAKEBASE_BRANCH_APP_WRITES
+            value: ${var.app_writes_branch}
+          - name: LAKEBASE_DATABASE
+            value: ${var.lakebase_database}
+          - name: LAKEBASE_SCHEMA
+            value: ${var.lakebase_schema}
+          - name: MODEL_ENDPOINT_NAME
+            value: ${var.model_endpoint_name}
+          - name: GENIE_SPACE_ID
+            value: ${var.genie_space_id}
+          - name: LLM_ENDPOINT_NAME
+            value: ${var.llm_endpoint_name}
+
+      resources:
+        - name: lakebase-production
+          description: "Read path — member_features (production branch)."
+          postgres:
+            branch: projects/${var.lakebase_project}/branches/${var.lakebase_branch}
+            database: projects/${var.lakebase_project}/branches/${var.lakebase_branch}/databases/${var.lakebase_database_id}
+            permission: CAN_CONNECT_AND_CREATE
+        - name: lakebase-app-writes
+          description: "CRUD path — action_catalog + audit (app-writes branch)."
+          postgres:
+            branch: projects/${var.lakebase_project}/branches/${var.app_writes_branch}
+            database: projects/${var.lakebase_project}/branches/${var.app_writes_branch}/databases/${var.lakebase_database_id}
+            permission: CAN_CONNECT_AND_CREATE
+        - name: nba-model
+          description: "Scoring endpoint."
+          serving_endpoint:
+            name: ${var.model_endpoint_name}
+            permission: CAN_QUERY

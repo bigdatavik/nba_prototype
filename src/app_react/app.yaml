@@ -1,0 +1,59 @@
+command:
+  - uvicorn
+  - backend.main:app
+  - --host
+  - "0.0.0.0"
+  - --port
+  - "8000"
+
+# -----------------------------------------------------------------------------
+# Environment configuration
+# -----------------------------------------------------------------------------
+# Same env-var contract as the Streamlit app (src/app/app.yaml). When deployed
+# via the Databricks Asset Bundle these are overwritten per-target from bundle
+# variables (see the README for the additive resources/nba_app_react.app.yml
+# snippet). The values committed here are safe, generic defaults so the app is
+# runnable and inspectable outside the bundle.
+#
+# Nothing below is tied to a specific workspace or Lakebase endpoint host — the
+# backend resolves the actual Postgres host at runtime from LAKEBASE_PROJECT +
+# branch names via the Databricks SDK (self-heals across branch re-forks). The
+# React frontend never bakes hosts/ids into its bundle — it reads /api/config.
+env:
+  # --- Lakebase project + branches ---
+  - name: LAKEBASE_PROJECT
+    value: "lakebase-demo-autoscale"
+  - name: LAKEBASE_BRANCH_PRODUCTION
+    value: "production"
+  - name: LAKEBASE_BRANCH_APP_WRITES
+    value: "app-writes"
+  # --- Shared Postgres coordinates ---
+  - name: LAKEBASE_DATABASE
+    value: "databricks_postgres"
+  - name: LAKEBASE_SCHEMA
+    value: "nba_new_lbase"
+  # --- Model serving ---
+  - name: MODEL_ENDPOINT_NAME
+    value: "nba-scoring-endpoint"
+  # --- Genie (Ask NBA page + global launcher) --- blank disables it
+  - name: GENIE_SPACE_ID
+    value: ""
+  # --- Assist LLM (Member Lookup draft) --- blank disables drafting
+  - name: LLM_ENDPOINT_NAME
+    value: ""
+
+resources:
+  - name: lakebase-production
+    lakebase:
+      permission: CAN_CONNECT
+      postgres:
+        branch: production
+        database: databricks_postgres
+  - name: lakebase-app-writes
+    lakebase:
+      permission: CAN_CONNECT_AND_CREATE
+      postgres:
+        branch: app-writes
+        database: databricks_postgres
+  - name: nba-model
+    serving_endpoint: nba-scoring-endpoint

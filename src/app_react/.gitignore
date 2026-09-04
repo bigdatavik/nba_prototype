@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Node
+frontend/node_modules/
+npm-debug.log*
+
+# tsc -b build artifacts (project references)
+*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# Keep the built SPA committed so the app runtime needs no Node
+# (FastAPI serves frontend/dist via StaticFiles). Do NOT ignore it:
+# frontend/dist/
+
+# OS / IDE
+.DS_Store
+.vscode/
+.idea/

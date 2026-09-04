@@ -234,13 +234,30 @@ grant_genie_access() {
     warn "No warehouse_id configured — skipping warehouse grant."
   fi
 
-  # 3) UC grants on the Genie analytics schema (so the SP can run generated SQL)
+  # 3) UC grants so the SP can run Genie's generated SQL. The Genie space spans
+  #    TWO schemas: the analytics star-schema (GENIE_SCHEMA, e.g. nba_genie) AND
+  #    the app's own schema (UC_SCHEMA, e.g. nba_new) which now contributes the
+  #    governed `nba_decisions` table. Genie validates EVERY table in the space
+  #    per conversation, so the SP must be able to read both — otherwise the whole
+  #    space fails with PERMISSION_DENIED for everyone.
   if [ -n "${GENIE_CATALOG:-}" ] && [ -n "${GENIE_SCHEMA:-}" ] && [ -n "${WAREHOUSE_ID:-}" ]; then
     local stmt
-    for grant in \
-      "USE CATALOG ON CATALOG ${GENIE_CATALOG}" \
-      "USE SCHEMA ON SCHEMA ${GENIE_CATALOG}.${GENIE_SCHEMA}" \
-      "SELECT ON SCHEMA ${GENIE_CATALOG}.${GENIE_SCHEMA}"; do
+    local grants=(
+      "USE CATALOG ON CATALOG ${GENIE_CATALOG}"
+      "USE SCHEMA ON SCHEMA ${GENIE_CATALOG}.${GENIE_SCHEMA}"
+      "SELECT ON SCHEMA ${GENIE_CATALOG}.${GENIE_SCHEMA}"
+    )
+    # Also grant the app's own schema (where nba_decisions lives) if it differs
+    # from the analytics schema. UC_CATALOG usually == GENIE_CATALOG here.
+    if [ -n "${UC_CATALOG:-}" ] && [ -n "${UC_SCHEMA:-}" ] \
+       && [ "${UC_CATALOG}.${UC_SCHEMA}" != "${GENIE_CATALOG}.${GENIE_SCHEMA}" ]; then
+      grants+=(
+        "USE CATALOG ON CATALOG ${UC_CATALOG}"
+        "USE SCHEMA ON SCHEMA ${UC_CATALOG}.${UC_SCHEMA}"
+        "SELECT ON SCHEMA ${UC_CATALOG}.${UC_SCHEMA}"
+      )
+    fi
+    for grant in "${grants[@]}"; do
       stmt="$(python3 -c 'import json,sys;print(json.dumps({"warehouse_id":sys.argv[1],"statement":"GRANT "+sys.argv[2]+" TO `"+sys.argv[3]+"`","wait_timeout":"30s"}))' "$WAREHOUSE_ID" "$grant" "$sp")"
       if databricks api post /api/2.0/sql/statements "${P[@]}" --json "$stmt" >/dev/null 2>&1; then
         ok "GRANT $grant"

@@ -775,7 +775,24 @@ def genie_ask(question: str, conversation_id: Optional[str] = None) -> dict:
             time.sleep(5)
 
         if msg.get("status") != "COMPLETED":
-            out["error"] = f"Genie did not complete (status={msg.get('status')})."
+            # Surface the real reason: Genie puts failure detail in `error`, and
+            # sometimes inside an attachment. Fall back to a compact JSON dump.
+            detail = ""
+            err = msg.get("error")
+            if isinstance(err, dict):
+                detail = err.get("error") or err.get("message") or json.dumps(err)
+            elif isinstance(err, str):
+                detail = err
+            if not detail:
+                for att in msg.get("attachments", []):
+                    if isinstance(att.get("error"), dict):
+                        detail = att["error"].get("error") or att["error"].get("message", "")
+                    if detail:
+                        break
+            if not detail:
+                detail = json.dumps(msg)[:600]
+            out["error"] = (f"Genie did not complete (status={msg.get('status')}): "
+                            f"{detail}")
             return out
 
         # Extract text answer + SQL, and fetch the query result if present

@@ -1,0 +1,23 @@
+# =============================================================================
+# Job — grant Lakebase access to the React app's service principal.
+# One-off, non-destructive (CREATE ROLE + GRANT only; no re-fork / reseed).
+# Lets the React app (app_name_react) read production + read/write app-writes,
+# coexisting with the Streamlit app. Run:
+#   databricks bundle run nba_grant_react_sp -t genie
+# =============================================================================
+resources:
+  jobs:
+    nba_grant_react_sp:
+      name: "[${bundle.target}] NBA — Grant Lakebase to React app SP"
+      tasks:
+        - task_key: grant
+          notebook_task:
+            notebook_path: ../src/notebooks/grant_react_sp.py
+            base_parameters:
+              lakebase_project: ${var.lakebase_project}
+              lakebase_database: ${var.lakebase_database}
+              lakebase_schema: ${var.lakebase_schema}
+              lakebase_branch: ${var.lakebase_branch}
+              app_writes_branch: ${var.app_writes_branch}
+              react_app_name: ${var.app_name_react}
+              react_sp: ""
