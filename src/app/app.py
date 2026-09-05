@@ -35,15 +35,27 @@ LAKEBASE_DATABASE = os.getenv("LAKEBASE_DATABASE", "databricks_postgres")
 LAKEBASE_SCHEMA = os.getenv("LAKEBASE_SCHEMA", "nba_new_lbase")
 MODEL_ENDPOINT_NAME = os.getenv("MODEL_ENDPOINT_NAME", "nba-scoring-endpoint")
 
+# Optional feature env vars are "disabled" when blank. The DABs Apps deploy API
+# rejects an env var whose value is an empty string, so the bundle passes a
+# non-empty sentinel ("-") for unset optional vars; treat the sentinel (and any
+# whitespace) as blank here so the feature stays cleanly disabled.
+_DISABLED_SENTINELS = {"", "-", "none", "disabled"}
+
+
+def _optional_env(name: str) -> str:
+    v = os.getenv(name, "").strip()
+    return "" if v.lower() in _DISABLED_SENTINELS else v
+
+
 # Genie Space for the "Ask NBA" page (natural-language analytics over UC). Blank
 # disables the page. The space is bound to its own SQL warehouse at creation, so
 # the app only needs the space id.
-GENIE_SPACE_ID = os.getenv("GENIE_SPACE_ID", "")
+GENIE_SPACE_ID = _optional_env("GENIE_SPACE_ID")
 
 # Foundation Model (chat) endpoint used by the per-member "Assist" — drafts the
 # outreach message. Blank disables the draft feature (reason codes + what-if
 # still work). Any Databricks FM chat endpoint (llm/v1/chat) works.
-LLM_ENDPOINT_NAME = os.getenv("LLM_ENDPOINT_NAME", "")
+LLM_ENDPOINT_NAME = _optional_env("LLM_ENDPOINT_NAME")
 
 # Lakebase project + branch names → endpoint resource paths.
 # Prefer the explicit endpoint env vars if provided; otherwise build them from

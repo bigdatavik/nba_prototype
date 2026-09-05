@@ -100,9 +100,11 @@ variables:
   genie_space_id:
     description: >-
       Genie Space id the app's "Ask NBA" page queries via the Conversation API.
-      Blank disables the page. Provision the space separately (see the
-      genie-room tutorial project), then set this + genie_catalog/genie_schema.
-    default: ""
+      "-" (the default) disables the page. Provision the space separately (see
+      the genie-room tutorial project), then set this + genie_catalog/genie_schema.
+      NOTE: use "-" (not "") to disable — the DABs Apps deploy API rejects an
+      empty-string env value; the app maps "-" back to blank.
+    default: "-"
   genie_catalog:
     description: >-
       UC catalog holding the Genie space's analytics tables. setup.sh grants the
@@ -114,9 +116,10 @@ variables:
   llm_endpoint_name:
     description: >-
       Foundation Model chat endpoint (llm/v1/chat) the app's per-member Assist
-      uses to draft outreach. Blank disables drafting. setup.sh grants the app
-      SP CAN_QUERY on it. e.g. databricks-claude-haiku-4-5.
-    default: ""
+      uses to draft outreach. "-" (the default) disables drafting. setup.sh
+      grants the app SP CAN_QUERY on it. e.g. databricks-claude-haiku-4-5.
+      NOTE: use "-" (not "") to disable — see genie_space_id.
+    default: "-"
 
 # -----------------------------------------------------------------------------
 # Targets — dev (default) and prod. Add your own environment targets as needed.
