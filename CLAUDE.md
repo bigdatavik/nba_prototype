@@ -77,6 +77,99 @@ databricks bundle run nba_console     -t dev   # start the app
 databricks apps logs <app-name>
 ```
 
+## Launch this project on a fresh workspace (onboarding playbook)
+
+**Trigger phrases:** "launch this project", "set me up", "spin up / stand up a new
+environment", "onboard me", "get me started", "install this somewhere fresh".
+
+**Instruction to the assistant:** run the flow below. It is the exact,
+end-to-end-validated path (a full run stands up **both** consoles + Lakebase +
+scoring + decisions + Genie on a brand-new workspace). Confirm before any
+**create** or **delete** of a cloud workspace; everything else is announce-and-run.
+
+### Step 0 — pick the path
+
+Ask (or detect): **do you have FEVM access (a Databricks field employee), or are you
+bringing your own workspace?**
+- **FEVM available** (the `fe-ai-tools:fevm` skill / MCP loads) → **Path A** — offer
+  to provision a fresh workspace.
+- **External / own workspace** → **Path B** — gather their workspace details and
+  configure a target against it. Do NOT try to provision.
+
+### Path A — provision a new FEVM workspace (Databricks employees)
+
+1. Load the `fe-ai-tools:fevm` skill and ensure the MCP is authenticated
+   (`/mcp` → `fe-vending-machine` → Authenticate; first tool call may need the
+   one-time service login page).
+2. `check_quota` for the template (default **`aws_stable_serverless`**, user limit
+   is typically 3). **If no slots are free:** `list_deployments` and **ask the user
+   which existing workspace to reuse** (then jump to Step 1 of "common" against it)
+   **or which non-important one to delete** to free a slot. Never delete a
+   workspace without the user's explicit choice.
+3. Show the proposed deployment (`prefill_deployment`: template, region — default
+   **us-west-2**, name, TTL 30d, **no addons**). On the user's go-ahead,
+   `create_deployment`, then poll `get_deployment` until **Active** (~5–15 min).
+4. Have the user authenticate (interactive SSO) — they run with the `!` prefix:
+   `! databricks auth login --host <workspace-url> --profile <name>`
+
+### Path B — use the user's existing workspace (external users)
+
+Collect from the user: **workspace host/URL** and a **CLI profile** (or have them
+run `databricks auth login`). Then continue with the common steps — and be explicit
+about catalog/schema (Step 1 below): tell them the default names this project uses
+and **ask whether those are OK or they want different ones**.
+
+### Common — configure + install (both paths)
+
+1. **Decide catalog + schema (confirm with the user).** `databricks catalogs list -p
+   <profile>` (from outside the bundle dir). If the workspace has **Default Storage**
+   (a brand-new empty catalog can't be created), **reuse the workspace's managed
+   catalog** and isolate via NEW schemas — do NOT create a new catalog. Present the
+   plan — e.g. `uc_catalog=<managed-catalog>`, `uc_schema=nba_new`, `cdf_schema=cdf`,
+   `lakebase_schema=nba_new_lbase` — and **ask if those names are fine or they want
+   different ones.** Grab a serverless SQL warehouse id (`databricks warehouses list`).
+2. **Add a target to `databricks.yml`** (the gitignored real file, NOT the template):
+   host + `profile:` + `uc_catalog`/`uc_schema` + `cdf_catalog`/`cdf_schema` +
+   `lakebase_project` + `lakebase_schema` + `model_name`/`model_endpoint_name` +
+   `mlflow_experiment_path` + `app_name` + `app_name_react` + `warehouse_id` +
+   `llm_endpoint_name`. Leave `genie_*` unset for now (defaults disable the page).
+3. `databricks bundle validate -t <target>` — must be clean before installing.
+4. `./scripts/setup.sh <target>` — deploys + starts **both** consoles (~15–20 min;
+   model training is the long pole). Report both app URLs when done.
+
+### Optional — enable "Ask NBA" (Genie), full stack
+
+Only if the user wants Genie (it's a separate project + extra ~15 min):
+1. `nba_seed_decisions` → wait ~30s (CDF) → `nba_reconcile_decisions` so the governed
+   UC `nba_decisions` table exists (Genie validates every table in the space).
+2. Copy `~/nba_payer_genie_tutorial` to a scratch dir (leave the original untouched);
+   repoint its `databricks.yml` (`host` + `profile`) and the notebook constants
+   (`CATALOG`=the workspace catalog, `WAREHOUSE_ID`, `SCHEMA`=nba_genie,
+   `APP_SCHEMA`=this target's `uc_schema`); `bundle deploy` + `bundle run
+   nba_payer_genie_room_setup`; read `genie_space_id` from
+   `<catalog>.nba_genie.config_genie`.
+3. Set `genie_space_id`/`genie_catalog`/`genie_schema` in the target; grant BOTH app
+   SPs: `bash -c 'source scripts/_lib.sh && load_bundle_config <target> &&
+   grant_genie_access "$APP_NAME" && grant_genie_access "$APP_NAME_REACT"'`; then
+   `bundle deploy` + `bundle run nba_console` + `bundle run nba_console_react`.
+
+### Teardown
+
+`./scripts/destroy.sh <target>` (removes apps + jobs, purges the Lakebase project,
+drops the schemas), then — if FEVM-created — deprovision the workspace via FEVM
+(`delete_deployments`, confirm first). Offer to remove the target from the local
+`databricks.yml` too.
+
+### Gotchas already fixed in code (no manual step)
+
+- **Both apps deploy** from the template now (`app_name_react` is declared; `setup.sh`
+  grants the React SP + starts both consoles).
+- **Optional env vars** (`genie_space_id`, `llm_endpoint_name`) use a `-` "disabled"
+  sentinel — an empty string breaks the DABs Apps deploy API; the apps map `-` back
+  to blank. Set a real value only when the feature is wired.
+- **DABs app `postgres.permission`** must be `CAN_CONNECT_AND_CREATE` (the runtime
+  `app.yaml` uses `CAN_CONNECT` — different schema; don't "fix" the bundle to match).
+
 ## Voice commands — say it in plain English, I run it
 
 **Instruction to the assistant:** when the user says one of the phrases below (or
@@ -108,6 +201,7 @@ target name for another target if the user names one.
 
 | If the user says… | Print `Running:` and run |
 | --- | --- |
+| "launch this project" / "set me up" / "spin up a new environment" / "onboard me" | Follow the **Launch this project on a fresh workspace** playbook above (do not just run one command). |
 | "full install" / "install everything" | `./scripts/setup.sh azure` |
 | "full rebuild" / "nuke and rebuild" | `./scripts/reset.sh azure --full` |
 | "tear down everything" / "destroy it all" / "delete the environment" | `./scripts/destroy.sh azure` |
