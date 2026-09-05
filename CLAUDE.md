@@ -84,8 +84,11 @@ environment", "onboard me", "get me started", "install this somewhere fresh".
 
 **Instruction to the assistant:** run the flow below. It is the exact,
 end-to-end-validated path (a full run stands up **both** consoles + Lakebase +
-scoring + decisions + Genie on a brand-new workspace). Confirm before any
-**create** or **delete** of a cloud workspace; everything else is announce-and-run.
+scoring + decisions + Genie on a brand-new workspace). Confirm before you
+**create** a cloud workspace. **NEVER delete or deprovision a workspace** — FEVM
+or any other — that is ALWAYS a manual step the user performs themselves. You may
+tear down *resources inside* a workspace (apps, jobs, Lakebase project, schemas via
+`destroy.sh`), but never the workspace. Everything else is announce-and-run.
 
 ### Step 0 — pick the path
 
@@ -103,9 +106,11 @@ bringing your own workspace?**
    one-time service login page).
 2. `check_quota` for the template (default **`aws_stable_serverless`**, user limit
    is typically 3). **If no slots are free:** `list_deployments` and **ask the user
-   which existing workspace to reuse** (then jump to Step 1 of "common" against it)
-   **or which non-important one to delete** to free a slot. Never delete a
-   workspace without the user's explicit choice.
+   which existing workspace to reuse** (then jump to the common steps against it).
+   If they'd rather have a brand-new one, a slot must be freed by **deleting a
+   workspace — which they do themselves**: show the candidates, but **you never call
+   `delete_deployments` or delete a workspace**. Wait for them to free a slot, then
+   continue.
 3. Show the proposed deployment (`prefill_deployment`: template, region — default
    **us-west-2**, name, TTL 30d, **no addons**). On the user's go-ahead,
    `create_deployment`, then poll `get_deployment` until **Active** (~5–15 min).
@@ -156,9 +161,10 @@ Only if the user wants Genie (it's a separate project + extra ~15 min):
 ### Teardown
 
 `./scripts/destroy.sh <target>` (removes apps + jobs, purges the Lakebase project,
-drops the schemas), then — if FEVM-created — deprovision the workspace via FEVM
-(`delete_deployments`, confirm first). Offer to remove the target from the local
-`databricks.yml` too.
+drops the schemas) — this tears down **resources only**. **Deleting or
+deprovisioning the workspace itself is ALWAYS a manual step the user performs — you
+never delete a workspace (no FEVM `delete_deployments`, no cloud console deletion),
+FEVM or otherwise.** Offer to remove the target from the local `databricks.yml` too.
 
 ### Gotchas already fixed in code (no manual step)
 
