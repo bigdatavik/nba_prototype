@@ -199,7 +199,9 @@ PY
 # app; pass $APP_NAME_REACT to grant the React app's SP the same access).
 grant_genie_access() {
   local app_name="${1:-$APP_NAME}"
-  if [ -z "${GENIE_SPACE_ID:-}" ]; then
+  # "-" is the "disabled" sentinel (an empty string breaks the DABs Apps deploy,
+  # so unset optional vars default to "-"); treat it the same as blank here.
+  if [ -z "${GENIE_SPACE_ID:-}" ] || [ "${GENIE_SPACE_ID}" = "-" ]; then
     say "No genie_space_id for this target — skipping Genie grants for '$app_name'."
     return 0
   fi

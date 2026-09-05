@@ -43,6 +43,19 @@ done
 require_cli
 load_bundle_config "$TARGET"
 
+# Compute the dynamic banner lines BEFORE the heredoc. (An inline $( case … )
+# with ")" case patterns inside a heredoc is misparsed by macOS's bash 3.2.)
+if [ "$KEEP_PROJECT" = "yes" ]; then
+  PROJECT_LINE="  • (keeping) Lakebase project '$LAKEBASE_PROJECT'"
+else
+  PROJECT_LINE="  • Lakebase project '$LAKEBASE_PROJECT' — PURGED (hard delete, name reusable now)"
+fi
+case "$CATALOG_MODE" in
+  catalog) CATALOG_LINE="  • Unity Catalog '$UC_CATALOG' — DROPPED ENTIRELY (all schemas)";;
+  keep)    CATALOG_LINE="  • (keeping) Unity Catalog data";;
+  *)       CATALOG_LINE="  • UC schemas '$UC_CATALOG.$UC_SCHEMA' and '$CDF_CATALOG.$CDF_SCHEMA' — DROPPED";;
+esac
+
 cat <<EOF
 
 $(printf "${c_red}${c_bold}")============================================================
@@ -52,14 +65,8 @@ Target:            $TARGET
 Workspace:         $WORKSPACE_HOST
 Will DELETE:
   • the app + all jobs (databricks bundle destroy)
-$( [ "$KEEP_PROJECT" = "yes" ] \
-     && echo "  • (keeping) Lakebase project '$LAKEBASE_PROJECT'" \
-     || echo "  • Lakebase project '$LAKEBASE_PROJECT' — PURGED (hard delete, name reusable now)" )
-$( case "$CATALOG_MODE" in
-     catalog) echo "  • Unity Catalog '$UC_CATALOG' — DROPPED ENTIRELY (all schemas)";;
-     keep)    echo "  • (keeping) Unity Catalog data";;
-     *)       echo "  • UC schemas '$UC_CATALOG.$UC_SCHEMA' and '$CDF_CATALOG.$CDF_SCHEMA' — DROPPED";;
-   esac )
+$PROJECT_LINE
+$CATALOG_LINE
 EOF
 
 if [ "$ASSUME_YES" != "yes" ]; then
