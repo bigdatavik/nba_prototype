@@ -2,6 +2,11 @@
 
 Guidance for Claude Code (and humans) working in this repository.
 
+> **Branch topology (2026-09-22):** `main` is now the primary/default branch and
+> holds what used to be the `genie` branch (React console + fresh-install work).
+> The previous `main` was renamed to **`rev0`** (preserved as the original public
+> release line). The old `genie` branch no longer exists — its work is now `main`.
+
 ## What this project is
 
 A real-time **Next Best Action (NBA)** engine for a healthcare payer, built on
@@ -180,27 +185,29 @@ FEVM or otherwise.** Offer to remove the target from the local `databricks.yml` 
 
 **Instruction to the assistant:** when the user says one of the phrases below (or
 anything close to it), do this: (1) print one line — `Running: <the command>`,
-(2) run that exact command with the Bash tool on the `azure` target, (3) report
-the result plainly. Don't ask for confirmation for the **Day-to-day** commands;
-just announce and run. For the **Initial setup or reset** commands (they rebuild
-the environment), confirm first before running.
+(2) run that exact command with the Bash tool on the **`humana-nba-test`** target
+(host `fevm-humana-nba-test.cloud.databricks.com`, CLI profile `nbatest`; this is
+the current default workspace), (3) report the result plainly. Don't ask for
+confirmation for the **Day-to-day** commands; just announce and run. For the
+**Initial setup or reset** commands (they rebuild the environment), confirm first
+before running.
 
-Set `export DATABRICKS_CONFIG_PROFILE=<your-cli-profile>` for raw CLI verification;
+Set `export DATABRICKS_CONFIG_PROFILE=nbatest` for raw CLI verification;
 `databricks bundle …` commands infer the host from `databricks.yml`. Swap the
-target name for another target if the user names one.
+target name for another target if the user names one (e.g. `azure`, `fevm`, `genie`).
 
 ### Day-to-day (announce and run immediately)
 
 | If the user says… | Print `Running:` and run |
 | --- | --- |
-| "reset the demo" / "clean slate" / "start fresh" | `./scripts/reset.sh azure` |
-| "run the demo" / "show the reconcile demo" | `./scripts/demo.sh azure` |
-| "run the reconcile" / "publish my edit" / "I added an action" | `databricks bundle run nba_reconcile -t azure` |
-| "run the member refresh" / "daily sync" / "refresh features" | `databricks bundle run nba_daily_sync -t azure` |
-| "reset the actions" / "actions back to baseline" | `databricks bundle run nba_reset_action_catalog -t azure` |
-| "clean up the demo rows" | `./scripts/demo.sh azure --cleanup && databricks bundle run nba_reconcile -t azure` |
-| "start the app" / "restart the app" | `databricks bundle run nba_console -t azure` |
-| "deploy" / "push my code changes" | `databricks bundle deploy -t azure` |
+| "reset the demo" / "clean slate" / "start fresh" | `./scripts/reset.sh humana-nba-test` |
+| "run the demo" / "show the reconcile demo" | `./scripts/demo.sh humana-nba-test` |
+| "run the reconcile" / "publish my edit" / "I added an action" | `databricks bundle run nba_reconcile -t humana-nba-test` |
+| "run the member refresh" / "daily sync" / "refresh features" | `databricks bundle run nba_daily_sync -t humana-nba-test` |
+| "reset the actions" / "actions back to baseline" | `databricks bundle run nba_reset_action_catalog -t humana-nba-test` |
+| "clean up the demo rows" | `./scripts/demo.sh humana-nba-test --cleanup && databricks bundle run nba_reconcile -t humana-nba-test` |
+| "start the app" / "restart the app" | `databricks bundle run nba_console -t humana-nba-test` |
+| "deploy" / "push my code changes" | `databricks bundle deploy -t humana-nba-test` |
 | "check CDF" / "is CDF on" | `databricks api get /api/2.0/postgres/projects/<proj>/branches/<app_writes>/databases/<db_id>/cdf-configs/<lakebase_schema>/cdf-statuses` |
 
 ### Initial setup or reset (confirm first — these rebuild the environment)
@@ -208,9 +215,9 @@ target name for another target if the user names one.
 | If the user says… | Print `Running:` and run |
 | --- | --- |
 | "launch this project" / "set me up" / "spin up a new environment" / "onboard me" | Follow the **Launch this project on a fresh workspace** playbook above (do not just run one command). |
-| "full install" / "install everything" | `./scripts/setup.sh azure` |
-| "full rebuild" / "nuke and rebuild" | `./scripts/reset.sh azure --full` |
-| "tear down everything" / "destroy it all" / "delete the environment" | `./scripts/destroy.sh azure` |
+| "full install" / "install everything" | `./scripts/setup.sh humana-nba-test` |
+| "full rebuild" / "nuke and rebuild" | `./scripts/reset.sh humana-nba-test --full` |
+| "tear down everything" / "destroy it all" / "delete the environment" | `./scripts/destroy.sh humana-nba-test` |
 
 > These scripts are config-driven (`scripts/README.md`) and work in any workspace.
 > `reset.sh` (day-to-day) is non-destructive (actions → baseline, keeps branch + CDF).
